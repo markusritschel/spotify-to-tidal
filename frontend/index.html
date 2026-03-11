@@ -119,32 +119,6 @@
     .card-title { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
     .card-desc  { font-size: 0.84rem; color: var(--muted); line-height: 1.65; margin-bottom: 1.75rem; }
 
-    /* ── Form fields ─────────────────────────────────────────── */
-    .field       { margin-bottom: 1.1rem; }
-    .field label {
-      display: block; font-size: 0.68rem; letter-spacing: 0.12em;
-      text-transform: uppercase; color: var(--muted); margin-bottom: 0.45rem;
-    }
-    .field input {
-      width: 100%; padding: 0.7rem 0.9rem;
-      background: var(--s2); border: 1px solid var(--brite);
-      border-radius: 8px; color: var(--text);
-      font-family: 'Space Mono', monospace; font-size: 0.78rem;
-      outline: none; transition: border-color 0.2s;
-    }
-    .field input:focus  { border-color: var(--sp); }
-    .field input::placeholder { color: var(--muted); }
-    .field-hint {
-      margin-top: 0.4rem; font-size: 0.73rem;
-      color: var(--muted); line-height: 1.5;
-    }
-    .field-hint a { color: var(--td); text-decoration: none; }
-    .field-hint a:hover { text-decoration: underline; }
-    .field-hint code {
-      font-family: 'Space Mono', monospace; font-size: 0.68rem;
-      background: var(--s3); padding: 1px 5px; border-radius: 4px;
-    }
-
     /* ── Buttons ─────────────────────────────────────────────── */
     .btn {
       display: inline-flex; align-items: center; gap: 0.5rem;
@@ -283,17 +257,6 @@
       border-radius: 9px; font-size: 0.84rem; color: var(--err); line-height: 1.5;
     }
 
-    /* ── Config gear ─────────────────────────────────────────── */
-    .gear-btn {
-      position: fixed; top: 1.25rem; right: 1.25rem;
-      width: 36px; height: 36px; border-radius: 50%;
-      background: var(--s2); border: 1px solid var(--brite);
-      display: flex; align-items: center; justify-content: center;
-      cursor: pointer; color: var(--muted); font-size: 0.9rem;
-      transition: all 0.18s; z-index: 10;
-    }
-    .gear-btn:hover { border-color: var(--text); color: var(--text); }
-
     /* ── Spinner ─────────────────────────────────────────────── */
     .spin {
       display: inline-block; width: 14px; height: 14px;
@@ -323,9 +286,10 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback } = React;
 
-    // ── localStorage keys ─────────────────────────────────────
-    const LS_ID  = 'sp2td_client_id';
-    const LS_URL = 'sp2td_backend';
+    // ── Build-time config (substituted by netlify.toml via envsubst) ─
+    const SPOTIFY_CLIENT_ID = '$SPOTIFY_CLIENT_ID';
+    const BACKEND_URL       = '$BACKEND_URL';
+
     const SS_PKV = 'sp2td_pkce_v';
 
     const REDIRECT = () => window.location.origin + window.location.pathname;
@@ -347,12 +311,11 @@
 
     // ── Main App ──────────────────────────────────────────────
     function App() {
-      // step: 0=setup, 1=spotify, 2=tidal, 3=options, 4=transfer, 5=done
-      const [step, setStep]               = useState(null);
-      const [showSetup, setShowSetup]     = useState(false);
+      // step: 1=spotify, 2=tidal, 3=options, 4=transfer, 5=done
+      const [step, setStep] = useState(null);
 
-      const [clientId,  setClientId]      = useState(() => localStorage.getItem(LS_ID)  || '');
-      const [backendUrl, setBackendUrl]   = useState(() => localStorage.getItem(LS_URL) || '');
+      const clientId  = SPOTIFY_CLIENT_ID;
+      const backendUrl = BACKEND_URL;
 
       const [spotifyToken,   setSpotifyToken]   = useState(null);
       const [spotifyProfile, setSpotifyProfile] = useState(null);
@@ -386,15 +349,14 @@
           // Coming back from Spotify OAuth
           history.replaceState({}, '', window.location.pathname);
           const verifier = sessionStorage.getItem(SS_PKV);
-          const cid      = localStorage.getItem(LS_ID);
-          if (!verifier || !cid) { setStep(1); return; }
+          if (!verifier || !clientId) { setStep(1); return; }
 
           fetch('https://accounts.spotify.com/api/token', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: new URLSearchParams({
               grant_type: 'authorization_code', code,
-              redirect_uri: REDIRECT(), client_id: cid, code_verifier: verifier,
+              redirect_uri: REDIRECT(), client_id: clientId, code_verifier: verifier,
             }),
           })
           .then(r => r.json())
@@ -413,10 +375,7 @@
           })
           .catch(e => { setError('Spotify auth error: ' + e.message); setStep(1); });
         } else {
-          // Normal load — check if setup is complete
-          const cid = localStorage.getItem(LS_ID);
-          const url = localStorage.getItem(LS_URL);
-          setStep(cid && url ? 1 : 0);
+          setStep(1);
         }
       }, []);
 
@@ -424,14 +383,6 @@
       useEffect(() => () => clearInterval(pollRef.current), []);
 
       const backend = backendUrl.replace(/\/$/, '');
-
-      // ── Setup save ───────────────────────────────────────────
-      const saveSetup = () => {
-        localStorage.setItem(LS_ID,  clientId.trim());
-        localStorage.setItem(LS_URL, backendUrl.trim().replace(/\/$/, ''));
-        setShowSetup(false);
-        if (step === 0) setStep(1);
-      };
 
       // ── Connect Spotify ──────────────────────────────────────
       const connectSpotify = async () => {
@@ -455,6 +406,7 @@
           if (!r.ok) throw new Error(d.detail || 'Backend error');
           setTidalSid(d.session_id);
           setTidalUrl(d.url);
+          window.open(d.url, '_blank', 'noopener');
           // Poll for completion
           pollRef.current = setInterval(async () => {
             try {
@@ -531,53 +483,12 @@
 
       if (step === null) return null;
 
-      // ── Setup modal ──────────────────────────────────────────
-      const SetupPanel = ({ onSave, title = 'Configuration' }) => (
-        <div className="card">
-          <div className="card-title">{title}</div>
-          <div className="card-desc">
-            Enter your Spotify Developer Client ID and your Railway backend URL.
-            These are saved locally in your browser only.
-          </div>
-          <div className="field">
-            <label>Spotify Client ID</label>
-            <input type="text" placeholder="4e3a1f2bxxxxxxxxxxxxxxxxxxxxxxxx"
-              value={clientId} onChange={e => setClientId(e.target.value)} />
-            <div className="field-hint">
-              Get one at{' '}
-              <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">
-                developer.spotify.com
-              </a>
-              . Set the redirect URI to: <code>{REDIRECT()}</code>
-            </div>
-          </div>
-          <div className="field">
-            <label>Railway Backend URL</label>
-            <input type="text" placeholder="https://your-app.up.railway.app"
-              value={backendUrl} onChange={e => setBackendUrl(e.target.value)} />
-            <div className="field-hint">
-              Deploy the <code>backend/</code> folder to Railway, then paste the public URL here.
-            </div>
-          </div>
-          <button className="btn btn-grad btn-full"
-            onClick={onSave}
-            disabled={!clientId.trim() || !backendUrl.trim()}>
-            {title === 'Configuration' ? 'Save & Continue →' : 'Save Changes'}
-          </button>
-        </div>
-      );
-
       // ── Render ───────────────────────────────────────────────
 
       const STEP_LABELS = ['Spotify','Tidal','Options','Transfer','Done'];
 
       return (
         <>
-          {/* Settings gear */}
-          {step > 0 && !showSetup && (
-            <button className="gear-btn" onClick={() => setShowSetup(true)} title="Settings">⚙</button>
-          )}
-
           {/* Header */}
           <div className="hd">
             <div className="hd-label">Music Library Transfer</div>
@@ -585,38 +496,25 @@
           </div>
 
           {/* Step indicator */}
-          {step > 0 && !showSetup && (
-            <div className="steps">
-              {STEP_LABELS.map((lbl, i) => {
-                const s = i + 1;
-                return (
-                  <React.Fragment key={s}>
-                    {i > 0 && <div className="step-line" />}
-                    <div className={`step ${step === s ? 'active' : step > s ? 'done' : ''}`}>
-                      <div className="step-n">{step > s ? '✓' : s}</div>
-                      <div className="step-lbl">{lbl}</div>
-                    </div>
-                  </React.Fragment>
-                );
-              })}
-            </div>
-          )}
+          <div className="steps">
+            {STEP_LABELS.map((lbl, i) => {
+              const s = i + 1;
+              return (
+                <React.Fragment key={s}>
+                  {i > 0 && <div className="step-line" />}
+                  <div className={`step ${step === s ? 'active' : step > s ? 'done' : ''}`}>
+                    <div className="step-n">{step > s ? '✓' : s}</div>
+                    <div className="step-lbl">{lbl}</div>
+                  </div>
+                </React.Fragment>
+              );
+            })}
+          </div>
 
           {/* Error bar */}
           {error && <div className="err-box">⚠ {error}</div>}
 
-          {/* ── Step 0: Setup ── */}
-          {step === 0 && <SetupPanel onSave={saveSetup} />}
 
-          {/* ── Settings overlay ── */}
-          {showSetup && (
-            <SetupPanel title="Settings" onSave={() => {
-              saveSetup();
-              setShowSetup(false);
-            }} />
-          )}
-
-          {!showSetup && <>
 
           {/* ── Step 1: Spotify ── */}
           {step === 1 && (
@@ -657,8 +555,7 @@
             <div className="card">
               <div className="card-title">Connect Tidal</div>
               <div className="card-desc">
-                Tidal uses a device login flow. Click the link below, sign in to Tidal,
-                and this page will automatically continue.
+                A Tidal login window will open. Sign in there — this page will continue automatically.
               </div>
               {tidalConnected ? (
                 <>
@@ -672,18 +569,20 @@
                 </>
               ) : tidalUrl ? (
                 <>
-                  <div className="url-box">
-                    <span style={{color:'var(--td)'}}>🔗</span>
-                    <a href={tidalUrl} target="_blank" rel="noopener">{tidalUrl}</a>
-                  </div>
-                  <div className="waiting">
+                  <div className="waiting" style={{marginBottom:'1rem'}}>
                     <div className="spin" style={{color:'var(--td)'}} />
                     Waiting for Tidal login…
+                  </div>
+                  <div style={{fontSize:'0.75rem', color:'var(--muted)'}}>
+                    Window didn't open?{' '}
+                    <a href={tidalUrl} target="_blank" rel="noopener" style={{color:'var(--td)'}}>
+                      Click here
+                    </a>
                   </div>
                 </>
               ) : (
                 <button className="btn btn-td btn-full" onClick={connectTidal}>
-                  Generate Tidal Login Link
+                  Connect with Tidal
                 </button>
               )}
             </div>
@@ -801,8 +700,6 @@
               <button className="btn btn-ghost" onClick={reset}>↺ Start over</button>
             </div>
           )}
-
-          </>}
 
           <div className="footer">
             Transfers are one-way and read-only on Spotify · No data is stored on the server

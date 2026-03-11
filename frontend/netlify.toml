@@ -1,0 +1,8 @@
+[build]
+  # Substitute $SPOTIFY_CLIENT_ID and $BACKEND_URL environment variables into index.html
+  command = "envsubst '$SPOTIFY_CLIENT_ID $BACKEND_URL' < index.html > _index.html && mv _index.html index.html"
+  publish = "."
+
+# Set these in Netlify → Site settings → Environment variables:
+#   SPOTIFY_CLIENT_ID  →  your Spotify app Client ID
+#   BACKEND_URL        →  your Railway backend URL (no trailing slash)
