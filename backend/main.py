@@ -359,13 +359,45 @@ def _ascii(s: str) -> str:
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii").strip()
 
 
+# Patterns commonly appended to track titles on one service but not the other.
+_TITLE_NOISE = re.compile(
+    r"\s*[\(\[]"                               # opening ( or [
+    r"(?:remaster(?:ed)?|live|acoustic"
+    r"|radio edit|single version|album version"
+    r"|mono|stereo|demo|bonus track"
+    r"|feat\.?|ft\.?|\d{4})"                  # keyword or year anchor
+    r"[^\)\]]*"                                # consume rest inside brackets
+    r"[\)\]]"                                  # closing ) or ]
+    r"|\s+-\s+(?:remaster(?:ed)?|live|acoustic|radio edit|single|mono|stereo|demo).*$",
+    re.IGNORECASE,
+)
+
+
+def _clean(s: str) -> str:
+    """Strip common version/remaster suffixes then normalise."""
+    return _norm(_TITLE_NOISE.sub("", s).strip())
+
+
+def _titles_match(a: str, b: str) -> bool:
+    """True if two raw title strings likely refer to the same track.
+
+    Cleans version noise first, then requires either exact equality or
+    a substring match where the shorter is ≥ 85 % the length of the longer
+    (prevents 'Love' from matching 'Love Song').
+    """
+    ca, cb = _clean(a), _clean(b)
+    if ca == cb:
+        return True
+    short, long_ = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
+    return bool(short) and short in long_ and len(short) / len(long_) >= 0.85
+
+
 def _result_matches(r: tidalapi.Track, artist_norm: str, title_norm: str) -> bool:
     """Return True if a Tidal result is a plausible match for the given artist+title."""
     try:
         r_artist = _norm(r.artist.name if r.artist else "")
-        r_title  = _norm(r.name or "")
         artist_ok = artist_norm in r_artist or r_artist in artist_norm
-        title_ok  = title_norm  in r_title  or r_title  in title_norm
+        title_ok  = _titles_match(r.name or "", title_norm)
         return artist_ok and title_ok
     except Exception:
         return False
@@ -376,11 +408,11 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
 
     Strategy:
     1. ISRC exact match (most reliable — same recording across services).
-    2. Verified name search: try up to three query forms and check top-5
-       results against normalised artist+title.  Returns the first result
-       that passes the check.
-    3. Last resort: return the first hit of the basic query even if
-       unverified (preserves old behaviour for edge cases).
+    2. Verified text search: up to six query forms (accented + ASCII),
+       top-5 results each, checked against cleaned artist+title.
+    3. Album-based lookup: search by artist+album, walk the track list,
+       match by cleaned title only (artist already scoped by album query).
+    Returns None if nothing passes verification — no unverified fallback.
     """
     def _search(query):
         try:
@@ -445,16 +477,14 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
                     for a in res.get("albums", [])[:5]:
                         try:
                             for t in a.tracks():
-                                t_title = _norm(t.name or "")
-                                if title_norm and (title_norm in t_title or t_title in title_norm):
+                                if title_norm and _titles_match(t.name or "", title_norm):
                                     return t
                         except Exception:
                             continue
                 except Exception:
                     continue
 
-        # ── 4. Last resort ────────────────────────────────────────────────
-        return first_hits[0] if first_hits else None
+        return None
 
     except Exception:
         return None
