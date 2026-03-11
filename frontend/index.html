@@ -326,10 +326,13 @@
 
       const [options, setOptions] = useState({liked:true, playlists:true, albums:true, artists:true});
 
-      const [logs,     setLogs]     = useState([]);
-      const [progress, setProgress] = useState({});
-      const [summary,  setSummary]  = useState(null);
-      const [error,    setError]    = useState(null);
+      const [logs,        setLogs]        = useState([]);
+      const [progress,    setProgress]    = useState({});
+      const [summary,     setSummary]     = useState(null);
+      const [error,       setError]       = useState(null);
+      const [jobId,       setJobId]       = useState(null);
+      const [cancelling,  setCancelling]  = useState(false);
+      const [wasCancelled,setWasCancelled]= useState(false);
 
       const logEl = useRef(null);
       const pollRef = useRef(null);
@@ -429,6 +432,7 @@
       // ── Start transfer ───────────────────────────────────────
       const startTransfer = async () => {
         setError(null); setStep(4); setLogs([]); setProgress({});
+        setCancelling(false); setWasCancelled(false);
         try {
           const r = await fetch(`${backend}/transfer/start`, {
             method: 'POST',
@@ -444,6 +448,7 @@
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || 'Failed to start');
+          setJobId(d.job_id);
           // Stream SSE
           const es = new EventSource(`${backend}/transfer/progress/${d.job_id}`);
           es.onmessage = e => {
@@ -454,6 +459,8 @@
               setProgress(prev => ({...prev, [msg.section]: msg}));
             } else if (msg.type === 'done') {
               setSummary(msg.summary); setStep(5); es.close();
+            } else if (msg.type === 'cancelled') {
+              setSummary(msg.summary); setWasCancelled(true); setStep(5); es.close();
             } else if (msg.type === 'error') {
               setError(msg.message); es.close();
             }
@@ -465,11 +472,46 @@
         }
       };
 
+      // ── Cancel transfer ──────────────────────────────────────
+      const cancelTransfer = async () => {
+        if (!jobId || cancelling) return;
+        setCancelling(true);
+        try {
+          await fetch(`${backend}/transfer/cancel/${jobId}`, {method: 'POST'});
+        } catch(_) {}
+      };
+
+      // ── CSV export ───────────────────────────────────────────
+      const downloadCSV = () => {
+        const rows = [['Section', 'Playlist', 'Title', 'Artist', 'Album']];
+        const sections = [
+          {k:'liked_songs', lbl:'Liked Songs'},
+          {k:'playlists',   lbl:'Playlists'},
+          {k:'albums',      lbl:'Albums'},
+          {k:'artists',     lbl:'Artists'},
+        ];
+        for (const {k, lbl} of sections) {
+          const s = summary?.[k];
+          if (!s?.failed_items?.length) continue;
+          for (const item of s.failed_items) {
+            rows.push([lbl, item.playlist||'', item.title||'', item.artist||'', item.album||'']);
+          }
+        }
+        const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+        const a = Object.assign(document.createElement('a'), {
+          href: URL.createObjectURL(new Blob([csv], {type:'text/csv'})),
+          download: 'unmatched_items.csv',
+        });
+        a.click();
+        URL.revokeObjectURL(a.href);
+      };
+
       // ── Reset ────────────────────────────────────────────────
       const reset = () => {
         setStep(1); setSpotifyToken(null); setSpotifyProfile(null);
         setTidalSid(null); setTidalUrl(null); setTidalConnected(false);
         setSummary(null); setLogs([]); setProgress({}); setError(null);
+        setJobId(null); setCancelling(false); setWasCancelled(false);
         clearInterval(pollRef.current);
       };
 
@@ -668,16 +710,22 @@
                   }
                 </div>
               </div>
+              <div style={{marginTop:'1.25rem'}}>
+                <button className="btn btn-ghost" onClick={cancelTransfer} disabled={cancelling}>
+                  {cancelling ? <><div className="spin" /> Cancelling…</> : '⛔ Cancel transfer'}
+                </button>
+              </div>
             </div>
           )}
 
-          {/* ── Step 5: Done ── */}
+          {/* ── Step 5: Done / Cancelled ── */}
           {step === 5 && summary && (
             <div className="card">
-              <div className="card-title">🎉 Transfer Complete!</div>
+              <div className="card-title">{wasCancelled ? '⛔ Transfer Cancelled' : '🎉 Transfer Complete!'}</div>
               <div className="card-desc">
-                Your Spotify library has been copied to Tidal.
-                Items not found are usually region-restricted or unavailable on Tidal.
+                {wasCancelled
+                  ? 'The transfer was stopped. Items transferred so far are shown below.'
+                  : 'Your Spotify library has been copied to Tidal. Items not found are usually region-restricted or unavailable on Tidal.'}
               </div>
               <div className="summary">
                 {[
@@ -697,7 +745,14 @@
                   </div>
                 ))}
               </div>
-              <button className="btn btn-ghost" onClick={reset}>↺ Start over</button>
+              <div style={{display:'flex', gap:'0.75rem', flexWrap:'wrap'}}>
+                {Object.values(summary).some(s => s.fail > 0) && (
+                  <button className="btn btn-ghost" onClick={downloadCSV}>
+                    ↓ Download unmatched items (CSV)
+                  </button>
+                )}
+                <button className="btn btn-ghost" onClick={reset}>↺ Start over</button>
+              </div>
             </div>
           )}
 

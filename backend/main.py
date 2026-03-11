@@ -33,8 +33,9 @@ app.add_middleware(
 
 # ─── In-memory state (fine for single Railway instance) ──────────────────────
 
-tidal_sessions: dict[str, dict] = {}       # session_id → {session, url, status}
-transfer_jobs:  dict[str, queue.Queue] = {} # job_id → progress event queue
+tidal_sessions: dict[str, dict] = {}           # session_id → {session, url, status}
+transfer_jobs:  dict[str, queue.Queue] = {}    # job_id → progress event queue
+cancel_flags:   dict[str, threading.Event] = {} # job_id → cancellation event
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
@@ -114,12 +115,24 @@ async def start_transfer(req: TransferRequest):
 
     job_id = str(uuid.uuid4())
     q: queue.Queue = queue.Queue()
+    cancel = threading.Event()
     transfer_jobs[job_id] = q
+    cancel_flags[job_id] = cancel
 
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(executor, _run_transfer, req, data["session"], q)
+    loop.run_in_executor(executor, _run_transfer, req, data["session"], q, cancel, job_id)
 
     return {"job_id": job_id}
+
+
+@app.post("/transfer/cancel/{job_id}")
+async def cancel_transfer(job_id: str):
+    """Signal a running transfer to stop after the current item."""
+    flag = cancel_flags.get(job_id)
+    if not flag:
+        raise HTTPException(404, "Job not found")
+    flag.set()
+    return {"status": "cancelling"}
 
 
 @app.get("/transfer/progress/{job_id}")
@@ -156,55 +169,63 @@ async def transfer_progress(job_id: str):
 
 # ─── Transfer logic (runs in thread pool) ─────────────────────────────────────
 
-def _run_transfer(req: TransferRequest, tidal: tidalapi.Session, q: queue.Queue):
+def _run_transfer(req: TransferRequest, tidal: tidalapi.Session, q: queue.Queue, cancel: threading.Event, job_id: str):
     def emit(msg):    q.put(msg)
     def log(msg, level="info"): emit({"type": "log", "message": msg, "level": level})
+    def cancelled(): return cancel.is_set()
 
     try:
         sp = spotipy.Spotify(auth=req.spotify_token)
         summary = {}
 
         # ── Liked Songs ──────────────────────────────────────────────────────
-        if req.transfer_liked:
+        if req.transfer_liked and not cancelled():
             log("📥 Fetching liked songs from Spotify…")
             tracks = _fetch_liked(sp, emit)
             log(f"🔍 Matching {len(tracks)} tracks on Tidal…")
-            ok, fail = _transfer_liked(tidal, tracks, emit)
-            summary["liked_songs"] = {"total": len(tracks), "ok": ok, "fail": fail}
+            ok, fail, failed = _transfer_liked(tidal, tracks, emit, cancelled)
+            summary["liked_songs"] = {"total": len(tracks), "ok": ok, "fail": fail, "failed_items": failed}
             emit({"type": "section_done", "section": "liked_songs", "ok": ok, "fail": fail})
 
         # ── Playlists ────────────────────────────────────────────────────────
-        if req.transfer_playlists:
+        if req.transfer_playlists and not cancelled():
             log("📥 Fetching playlists from Spotify…")
             playlists = _fetch_playlists(sp, emit)
             log(f"🔍 Transferring {len(playlists)} playlists to Tidal…")
-            ok, fail = _transfer_playlists(tidal, playlists, emit)
-            summary["playlists"] = {"total": len(playlists), "ok": ok, "fail": fail}
+            ok, fail, failed = _transfer_playlists(tidal, playlists, emit, cancelled)
+            summary["playlists"] = {"total": len(playlists), "ok": ok, "fail": fail, "failed_items": failed}
             emit({"type": "section_done", "section": "playlists", "ok": ok, "fail": fail})
 
         # ── Albums ───────────────────────────────────────────────────────────
-        if req.transfer_albums:
+        if req.transfer_albums and not cancelled():
             log("📥 Fetching saved albums from Spotify…")
             albums = _fetch_albums(sp, emit)
             log(f"🔍 Matching {len(albums)} albums on Tidal…")
-            ok, fail = _transfer_albums(tidal, albums, emit)
-            summary["albums"] = {"total": len(albums), "ok": ok, "fail": fail}
+            ok, fail, failed = _transfer_albums(tidal, albums, emit, cancelled)
+            summary["albums"] = {"total": len(albums), "ok": ok, "fail": fail, "failed_items": failed}
             emit({"type": "section_done", "section": "albums", "ok": ok, "fail": fail})
 
         # ── Artists ──────────────────────────────────────────────────────────
-        if req.transfer_artists:
+        if req.transfer_artists and not cancelled():
             log("📥 Fetching followed artists from Spotify…")
             artists = _fetch_artists(sp, emit)
             log(f"🔍 Matching {len(artists)} artists on Tidal…")
-            ok, fail = _transfer_artists(tidal, artists, emit)
-            summary["artists"] = {"total": len(artists), "ok": ok, "fail": fail}
+            ok, fail, failed = _transfer_artists(tidal, artists, emit, cancelled)
+            summary["artists"] = {"total": len(artists), "ok": ok, "fail": fail, "failed_items": failed}
             emit({"type": "section_done", "section": "artists", "ok": ok, "fail": fail})
 
-        log("✅ All done!")
-        emit({"type": "done", "summary": summary})
+        if cancelled():
+            log("⛔ Transfer cancelled.")
+            emit({"type": "cancelled", "summary": summary})
+        else:
+            log("✅ All done!")
+            emit({"type": "done", "summary": summary})
 
     except Exception as e:
         emit({"type": "error", "message": str(e)})
+    finally:
+        cancel_flags.pop(job_id, None)
+        transfer_jobs.pop(job_id, None)
 
 
 # ─── Spotify fetchers ─────────────────────────────────────────────────────────
@@ -310,9 +331,11 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
 
 # ─── Tidal writers ────────────────────────────────────────────────────────────
 
-def _transfer_liked(tidal, tracks, emit):
+def _transfer_liked(tidal, tracks, emit, cancelled):
     ok = fail = 0
+    failed = []
     for i, track in enumerate(tracks):
+        if cancelled(): break
         r = _find_track(tidal, track)
         if r:
             try:
@@ -320,17 +343,34 @@ def _transfer_liked(tidal, tracks, emit):
                 ok += 1
             except Exception:
                 fail += 1
+                failed.append({"title": track["title"], "artist": track["artist"], "album": track["album"]})
         else:
             fail += 1
+            failed.append({"title": track["title"], "artist": track["artist"], "album": track["album"]})
         emit({"type": "progress", "section": "liked_songs",
               "done": i + 1, "total": len(tracks), "ok": ok, "fail": fail})
         time.sleep(0.12)
-    return ok, fail
+    return ok, fail, failed
 
 
-def _transfer_playlists(tidal, playlists, emit):
+def _transfer_playlists(tidal, playlists, emit, cancelled):
     total_ok = total_fail = 0
+    failed = []
+
+    try:
+        existing = {p.name for p in tidal.user.playlist_and_favorite_playlists()}
+    except Exception:
+        existing = set()
+
     for i, pl in enumerate(playlists):
+        if cancelled(): break
+        if pl["name"] in existing:
+            emit({"type": "log", "message": f"⏭ '{pl['name']}' already exists on Tidal, skipping", "level": "info"})
+            emit({"type": "progress", "section": "playlists",
+                  "done": i + 1, "total": len(playlists),
+                  "ok": total_ok, "fail": total_fail, "current": pl["name"]})
+            continue
+
         try:
             tp = tidal.user.create_playlist(pl["name"], pl["description"])
         except Exception as e:
@@ -345,6 +385,7 @@ def _transfer_playlists(tidal, playlists, emit):
                 ok += 1
             else:
                 fail += 1
+                failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
             time.sleep(0.08)
 
         # Add tracks in batches of 50
@@ -363,12 +404,14 @@ def _transfer_playlists(tidal, playlists, emit):
             "ok": total_ok, "fail": total_fail,
             "current": pl["name"],
         })
-    return total_ok, total_fail
+    return total_ok, total_fail, failed
 
 
-def _transfer_albums(tidal, albums, emit):
+def _transfer_albums(tidal, albums, emit, cancelled):
     ok = fail = 0
+    failed = []
     for i, album in enumerate(albums):
+        if cancelled(): break
         try:
             res = tidal.search(f"{album['title']} {album['artist']}", models=[tidalapi.Album])
             hits = res.get("albums", [])
@@ -377,17 +420,21 @@ def _transfer_albums(tidal, albums, emit):
                 ok += 1
             else:
                 fail += 1
+                failed.append({"title": album["title"], "artist": album["artist"]})
         except Exception:
             fail += 1
+            failed.append({"title": album["title"], "artist": album["artist"]})
         emit({"type": "progress", "section": "albums",
               "done": i + 1, "total": len(albums), "ok": ok, "fail": fail})
         time.sleep(0.12)
-    return ok, fail
+    return ok, fail, failed
 
 
-def _transfer_artists(tidal, artists, emit):
+def _transfer_artists(tidal, artists, emit, cancelled):
     ok = fail = 0
+    failed = []
     for i, artist in enumerate(artists):
+        if cancelled(): break
         try:
             res = tidal.search(artist["name"], models=[tidalapi.Artist])
             hits = res.get("artists", [])
@@ -396,9 +443,11 @@ def _transfer_artists(tidal, artists, emit):
                 ok += 1
             else:
                 fail += 1
+                failed.append({"title": artist["name"]})
         except Exception:
             fail += 1
+            failed.append({"title": artist["name"]})
         emit({"type": "progress", "section": "artists",
               "done": i + 1, "total": len(artists), "ok": ok, "fail": fail})
         time.sleep(0.12)
-    return ok, fail
+    return ok, fail, failed
