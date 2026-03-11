@@ -376,9 +376,11 @@ def _transfer_liked(tidal, tracks, emit, cancelled):
             except Exception:
                 fail += 1
                 failed.append({"title": track["title"], "artist": track["artist"], "album": track["album"]})
+                emit({"type": "log", "message": f"✗ {track['title']} — {track['artist']}", "level": "warning"})
         else:
             fail += 1
             failed.append({"title": track["title"], "artist": track["artist"], "album": track["album"]})
+            emit({"type": "log", "message": f"✗ {track['title']} — {track['artist']}", "level": "warning"})
         emit({"type": "progress", "section": "liked_songs",
               "done": i + 1, "total": len(tracks), "ok": ok, "fail": fail})
         time.sleep(0.12)
@@ -442,6 +444,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 else:
                     fail += 1
                     failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                    emit({"type": "log", "message": f"✗ [{pl['name']}] {t['title']} — {t['artist']}", "level": "warning"})
                 time.sleep(0.08)
             for b in range(0, len(ids), 50):
                 try:
@@ -472,6 +475,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 else:
                     fail += 1
                     failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                    emit({"type": "log", "message": f"✗ [{pl['name']}] {t['title']} — {t['artist']}", "level": "warning"})
                 time.sleep(0.08)
             for b in range(0, len(ids), 50):
                 try:
@@ -505,9 +509,11 @@ def _transfer_albums(tidal, albums, emit, cancelled):
             else:
                 fail += 1
                 failed.append({"title": album["title"], "artist": album["artist"]})
+                emit({"type": "log", "message": f"✗ {album['title']} — {album['artist']}", "level": "warning"})
         except Exception:
             fail += 1
             failed.append({"title": album["title"], "artist": album["artist"]})
+            emit({"type": "log", "message": f"✗ {album['title']} — {album['artist']}", "level": "warning"})
         emit({"type": "progress", "section": "albums",
               "done": i + 1, "total": len(albums), "ok": ok, "fail": fail})
         time.sleep(0.12)
@@ -528,9 +534,11 @@ def _transfer_artists(tidal, artists, emit, cancelled):
             else:
                 fail += 1
                 failed.append({"title": artist["name"]})
+                emit({"type": "log", "message": f"✗ {artist['name']}", "level": "warning"})
         except Exception:
             fail += 1
             failed.append({"title": artist["name"]})
+            emit({"type": "log", "message": f"✗ {artist['name']}", "level": "warning"})
         emit({"type": "progress", "section": "artists",
               "done": i + 1, "total": len(artists), "ok": ok, "fail": fail})
         time.sleep(0.12)

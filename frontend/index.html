@@ -250,6 +250,39 @@
     }
     .sum-fail  { font-family: 'Space Mono', monospace; font-size: 0.72rem; color: var(--muted); }
 
+    /* ── Unmatched details panel ─────────────────────────────── */
+    .details-panel {
+      margin-top: 1.1rem; margin-bottom: 0.5rem;
+      background: var(--s2); border: 1px solid var(--border);
+      border-radius: 9px; overflow: hidden;
+    }
+    .details-section { border-bottom: 1px solid var(--border); }
+    .details-section:last-child { border-bottom: none; }
+    .details-section-hd {
+      padding: 0.65rem 1rem;
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+      background: var(--s3);
+    }
+    .details-list {
+      max-height: 200px; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--s3) transparent;
+    }
+    .details-item {
+      display: flex; gap: 0.5rem; align-items: baseline;
+      padding: 0.4rem 1rem;
+      font-family: 'Space Mono', monospace; font-size: 0.7rem;
+      border-bottom: 1px solid var(--border); color: var(--text);
+    }
+    .details-item:last-child { border-bottom: none; }
+    .details-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .details-item-artist { color: var(--muted); flex-shrink: 0; }
+    .details-item-playlist {
+      font-size: 0.62rem; color: var(--td); flex-shrink: 0;
+      padding: 1px 5px; background: rgba(0,147,221,0.1);
+      border-radius: 3px;
+    }
+
     /* ── Error box ───────────────────────────────────────────── */
     .err-box {
       padding: 0.85rem 1rem; margin-bottom: 1rem;
@@ -335,6 +368,7 @@
       const [jobId,       setJobId]       = useState(null);
       const [cancelling,  setCancelling]  = useState(false);
       const [wasCancelled,setWasCancelled]= useState(false);
+      const [showDetails, setShowDetails] = useState(false);
 
       const logEl = useRef(null);
       const pollRef = useRef(null);
@@ -565,7 +599,7 @@
         setStep(1); setSpotifyToken(null); setSpotifyProfile(null);
         setTidalSid(null); setTidalUrl(null); setTidalConnected(false);
         setSummary(null); setLogs([]); setProgress({}); setError(null);
-        setJobId(null); setCancelling(false); setWasCancelled(false);
+        setJobId(null); setCancelling(false); setWasCancelled(false); setShowDetails(false);
         clearInterval(pollRef.current);
       };
 
@@ -799,10 +833,53 @@
                   </div>
                 ))}
               </div>
+              {/* ── Unmatched details ── */}
+              {Object.values(summary).some(s => s.fail > 0) && (() => {
+                const sections = [
+                  {k:'liked_songs', lbl:'Liked Songs'},
+                  {k:'playlists',   lbl:'Playlist Tracks'},
+                  {k:'albums',      lbl:'Albums'},
+                  {k:'artists',     lbl:'Artists'},
+                ].filter(s => summary[s.k]?.failed_items?.length);
+                return (
+                  <>
+                    <button className="btn btn-ghost"
+                      style={{marginBottom:'0.75rem'}}
+                      onClick={() => setShowDetails(v => !v)}>
+                      {showDetails ? '▲ Hide unmatched items' : `▼ Show unmatched items (${sections.reduce((n,s) => n + summary[s.k].failed_items.length, 0)})`}
+                    </button>
+                    {showDetails && (
+                      <div className="details-panel">
+                        {sections.map(({k, lbl}) => (
+                          <div key={k} className="details-section">
+                            <div className="details-section-hd">
+                              {lbl} — {summary[k].failed_items.length} not found
+                            </div>
+                            <div className="details-list">
+                              {summary[k].failed_items.map((item, i) => (
+                                <div key={i} className="details-item">
+                                  {item.playlist && (
+                                    <span className="details-item-playlist">{item.playlist}</span>
+                                  )}
+                                  <span className="details-item-title">{item.title || item.name}</span>
+                                  {item.artist && (
+                                    <span className="details-item-artist">{item.artist}</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+
               <div style={{display:'flex', gap:'0.75rem', flexWrap:'wrap'}}>
                 {Object.values(summary).some(s => s.fail > 0) && (
                   <button className="btn btn-ghost" onClick={downloadCSV}>
-                    ↓ Download unmatched items (CSV)
+                    ↓ Download as CSV
                   </button>
                 )}
                 <button className="btn btn-ghost" onClick={reset}>↺ Start over</button>
