@@ -10,6 +10,7 @@ import queue
 import threading
 import time
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -92,7 +93,38 @@ async def tidal_auth_status(session_id: str):
     data = tidal_sessions.get(session_id)
     if not data:
         return {"status": "not_found"}
-    return {"status": data["status"]}
+    resp: dict = {"status": data["status"]}
+    if data["status"] == "authenticated":
+        sess = data["session"]
+        resp["session_tokens"] = {
+            "token_type":    sess.token_type,
+            "access_token":  sess.access_token,
+            "refresh_token": sess.refresh_token,
+            "expiry_time":   sess.expiry_time.timestamp() if sess.expiry_time else None,
+        }
+    return resp
+
+
+class TidalRestoreRequest(BaseModel):
+    token_type:    str
+    access_token:  str
+    refresh_token: Optional[str] = None
+    expiry_time:   Optional[float] = None
+
+
+@app.post("/tidal/restore")
+async def restore_tidal_session(req: TidalRestoreRequest):
+    """Restore a Tidal session from previously stored tokens."""
+    sess = tidalapi.Session()
+    expiry = datetime.fromtimestamp(req.expiry_time) if req.expiry_time else None
+    try:
+        sess.load_oauth_session(req.token_type, req.access_token, req.refresh_token, expiry)
+        _ = sess.user.id  # Verify session is valid
+    except Exception as e:
+        raise HTTPException(401, f"Could not restore Tidal session: {e}")
+    session_id = str(uuid.uuid4())
+    tidal_sessions[session_id] = {"session": sess, "status": "authenticated"}
+    return {"session_id": session_id}
 
 
 # ─── Transfer ─────────────────────────────────────────────────────────────────
@@ -150,7 +182,7 @@ async def transfer_progress(job_id: str):
             try:
                 msg = q.get_nowait()
                 yield f"data: {json.dumps(msg)}\n\n"
-                if msg.get("type") in ("done", "error"):
+                if msg.get("type") in ("done", "error", "cancelled"):
                     break
             except queue.Empty:
                 yield ": heartbeat\n\n"   # Keep connection alive
@@ -353,48 +385,100 @@ def _transfer_liked(tidal, tracks, emit, cancelled):
     return ok, fail, failed
 
 
+def _tidal_playlist_tracks(tp) -> list:
+    """Fetch all tracks from a Tidal playlist, handling pagination."""
+    tracks, offset = [], 0
+    while True:
+        batch = tp.tracks(limit=100, offset=offset)
+        if not batch:
+            break
+        tracks.extend(batch)
+        if len(batch) < 100:
+            break
+        offset += 100
+    return tracks
+
+
 def _transfer_playlists(tidal, playlists, emit, cancelled):
     total_ok = total_fail = 0
     failed = []
 
     try:
-        existing = {p.name for p in tidal.user.playlist_and_favorite_playlists()}
+        existing = {p.name: p for p in tidal.user.playlist_and_favorite_playlists()}
     except Exception:
-        existing = set()
+        existing = {}
 
     for i, pl in enumerate(playlists):
         if cancelled(): break
+
         if pl["name"] in existing:
-            emit({"type": "log", "message": f"⏭ '{pl['name']}' already exists on Tidal, skipping", "level": "info"})
-            emit({"type": "progress", "section": "playlists",
-                  "done": i + 1, "total": len(playlists),
-                  "ok": total_ok, "fail": total_fail, "current": pl["name"]})
-            continue
+            # ── Sync existing playlist ────────────────────────────────────────
+            tp = existing[pl["name"]]
+            emit({"type": "log", "message": f"🔄 Syncing '{pl['name']}'…", "level": "info"})
 
-        try:
-            tp = tidal.user.create_playlist(pl["name"], pl["description"])
-        except Exception as e:
-            emit({"type": "log", "message": f"⚠️ Skipped '{pl['name']}': {e}", "level": "warning"})
-            continue
+            tidal_tracks = _tidal_playlist_tracks(tp)
+            tidal_isrc_set  = {getattr(t, "isrc", "") for t in tidal_tracks if getattr(t, "isrc", "")}
+            spotify_isrc_set = {t["isrc"] for t in pl["tracks"] if t["isrc"]}
 
-        ids, ok, fail = [], 0, 0
-        for t in pl["tracks"]:
-            r = _find_track(tidal, t)
-            if r:
-                ids.append(r.id)
-                ok += 1
-            else:
-                fail += 1
-                failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
-            time.sleep(0.08)
+            # Remove tracks that are in Tidal but no longer in Spotify
+            to_remove = [idx for idx, t in enumerate(tidal_tracks)
+                         if getattr(t, "isrc", "") and getattr(t, "isrc", "") not in spotify_isrc_set]
+            for idx in sorted(to_remove, reverse=True):
+                try:
+                    tp.remove_by_index(idx)
+                except Exception:
+                    pass
+                time.sleep(0.05)
 
-        # Add tracks in batches of 50
-        for b in range(0, len(ids), 50):
+            # Add tracks that are in Spotify but not yet in Tidal
+            to_add = [t for t in pl["tracks"] if t["isrc"] and t["isrc"] not in tidal_isrc_set]
+            ids, ok, fail = [], 0, 0
+            for t in to_add:
+                if cancelled(): break
+                r = _find_track(tidal, t)
+                if r:
+                    ids.append(r.id)
+                    ok += 1
+                else:
+                    fail += 1
+                    failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                time.sleep(0.08)
+            for b in range(0, len(ids), 50):
+                try:
+                    tp.add(ids[b : b + 50])
+                except Exception:
+                    pass
+                time.sleep(0.2)
+            removed = len(to_remove)
+            added   = ok
+            emit({"type": "log",
+                  "message": f"✅ '{pl['name']}': +{added} added, -{removed} removed",
+                  "level": "info"})
+        else:
+            # ── Create new playlist ───────────────────────────────────────────
             try:
-                tp.add(ids[b : b + 50])
-            except Exception:
-                pass
-            time.sleep(0.2)
+                tp = tidal.user.create_playlist(pl["name"], pl["description"])
+            except Exception as e:
+                emit({"type": "log", "message": f"⚠️ Skipped '{pl['name']}': {e}", "level": "warning"})
+                continue
+
+            ids, ok, fail = [], 0, 0
+            for t in pl["tracks"]:
+                if cancelled(): break
+                r = _find_track(tidal, t)
+                if r:
+                    ids.append(r.id)
+                    ok += 1
+                else:
+                    fail += 1
+                    failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                time.sleep(0.08)
+            for b in range(0, len(ids), 50):
+                try:
+                    tp.add(ids[b : b + 50])
+                except Exception:
+                    pass
+                time.sleep(0.2)
 
         total_ok += ok
         total_fail += fail

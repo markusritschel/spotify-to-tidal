@@ -290,7 +290,9 @@
     const SPOTIFY_CLIENT_ID = '$SPOTIFY_CLIENT_ID';
     const BACKEND_URL       = '$BACKEND_URL';
 
-    const SS_PKV = 'sp2td_pkce_v';
+    const SS_PKV          = 'sp2td_pkce_v';
+    const LS_SP_REFRESH   = 'sp2td_sp_refresh';
+    const LS_TIDAL_TOKENS = 'sp2td_tidal_tokens';
 
     const REDIRECT = () => window.location.origin + window.location.pathname;
 
@@ -345,41 +347,92 @@
       // ── Init: handle Spotify redirect or restore state ──────
       useEffect(() => {
         document.getElementById('loading')?.remove();
+        const bk = BACKEND_URL.replace(/\/$/, '');
         const params = new URLSearchParams(window.location.search);
         const code = params.get('code');
 
-        if (code) {
-          // Coming back from Spotify OAuth
-          history.replaceState({}, '', window.location.pathname);
-          const verifier = sessionStorage.getItem(SS_PKV);
-          if (!verifier || !clientId) { setStep(1); return; }
+        const fetchProfile = token =>
+          fetch('https://api.spotify.com/v1/me', {headers: {Authorization: `Bearer ${token}`}})
+            .then(r => r.json()).then(setSpotifyProfile);
 
-          fetch('https://accounts.spotify.com/api/token', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: new URLSearchParams({
-              grant_type: 'authorization_code', code,
-              redirect_uri: REDIRECT(), client_id: clientId, code_verifier: verifier,
-            }),
-          })
-          .then(r => r.json())
-          .then(d => {
-            sessionStorage.removeItem(SS_PKV);
-            if (d.access_token) {
-              setSpotifyToken(d.access_token);
-              fetch('https://api.spotify.com/v1/me', {
-                headers: {Authorization: `Bearer ${d.access_token}`},
-              }).then(r => r.json()).then(setSpotifyProfile);
-              setStep(2);
-            } else {
-              setError('Spotify auth failed: ' + (d.error_description || d.error));
-              setStep(1);
+        const tryRestoreTidal = async () => {
+          const stored = localStorage.getItem(LS_TIDAL_TOKENS);
+          if (!stored || !bk) return false;
+          try {
+            const r = await fetch(`${bk}/tidal/restore`, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: stored,
+            });
+            if (!r.ok) throw new Error();
+            const d = await r.json();
+            setTidalSid(d.session_id);
+            setTidalConnected(true);
+            return true;
+          } catch(_) {
+            localStorage.removeItem(LS_TIDAL_TOKENS);
+            return false;
+          }
+        };
+
+        (async () => {
+          if (code) {
+            // ── Coming back from Spotify OAuth ──────────────────
+            history.replaceState({}, '', window.location.pathname);
+            const verifier = sessionStorage.getItem(SS_PKV);
+            if (!verifier || !clientId) { setStep(1); return; }
+            try {
+              const r = await fetch('https://accounts.spotify.com/api/token', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: new URLSearchParams({
+                  grant_type: 'authorization_code', code,
+                  redirect_uri: REDIRECT(), client_id: clientId, code_verifier: verifier,
+                }),
+              });
+              const d = await r.json();
+              sessionStorage.removeItem(SS_PKV);
+              if (d.access_token) {
+                setSpotifyToken(d.access_token);
+                if (d.refresh_token) localStorage.setItem(LS_SP_REFRESH, d.refresh_token);
+                fetchProfile(d.access_token);
+                const tidalOk = await tryRestoreTidal();
+                setStep(tidalOk ? 3 : 2);
+              } else {
+                setError('Spotify auth failed: ' + (d.error_description || d.error));
+                setStep(1);
+              }
+            } catch(e) { setError('Spotify auth error: ' + e.message); setStep(1); }
+
+          } else {
+            // ── Normal load: try to restore saved sessions ───────
+            const storedRefresh = localStorage.getItem(LS_SP_REFRESH);
+            if (storedRefresh && clientId) {
+              try {
+                const r = await fetch('https://accounts.spotify.com/api/token', {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                  body: new URLSearchParams({
+                    grant_type: 'refresh_token',
+                    refresh_token: storedRefresh,
+                    client_id: clientId,
+                  }),
+                });
+                const d = await r.json();
+                if (d.access_token) {
+                  setSpotifyToken(d.access_token);
+                  if (d.refresh_token) localStorage.setItem(LS_SP_REFRESH, d.refresh_token);
+                  fetchProfile(d.access_token);
+                  const tidalOk = await tryRestoreTidal();
+                  setStep(tidalOk ? 3 : 2);
+                  return;
+                }
+              } catch(_) {}
+              localStorage.removeItem(LS_SP_REFRESH);
             }
-          })
-          .catch(e => { setError('Spotify auth error: ' + e.message); setStep(1); });
-        } else {
-          setStep(1);
-        }
+            setStep(1);
+          }
+        })();
       }, []);
 
       // ── Cleanup poll on unmount ──────────────────────────────
@@ -416,6 +469,7 @@
               const pr = await fetch(`${backend}/tidal/auth/status?session_id=${d.session_id}`);
               const pd = await pr.json();
               if (pd.status === 'authenticated') {
+                if (pd.session_tokens) localStorage.setItem(LS_TIDAL_TOKENS, JSON.stringify(pd.session_tokens));
                 setTidalConnected(true);
                 clearInterval(pollRef.current);
               } else if (pd.status === 'failed') {
