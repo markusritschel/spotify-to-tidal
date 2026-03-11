@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spotify → Tidal Transfer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #07070b;
+      --s1:       #0f0f14;
+      --s2:       #17171f;
+      --s3:       #1e1e28;
+      --border:   rgba(255,255,255,0.07);
+      --brite:    rgba(255,255,255,0.13);
+      --sp:       #1DB954;
+      --td:       #0093DD;
+      --text:     #eaeaf0;
+      --muted:    #52526a;
+      --warn:     #e8a030;
+      --err:      #e84040;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 3rem 1rem 4rem;
+    }
+
+    /* ── Background atmosphere ───────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none; z-index: 0;
+    }
+    body::after {
+      content: '';
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse 55% 45% at 5% 55%, rgba(29,185,84,0.055) 0%, transparent 65%),
+        radial-gradient(ellipse 50% 40% at 95% 40%, rgba(0,147,221,0.055) 0%, transparent 65%);
+      pointer-events: none; z-index: 0;
+    }
+
+    #root { position: relative; z-index: 1; width: 100%; max-width: 600px; }
+
+    /* ── Loading screen ──────────────────────────────────────── */
+    #loading {
+      position: fixed; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+      font-family: 'Space Mono', monospace; font-size: 0.75rem;
+      color: var(--muted); letter-spacing: 0.15em; z-index: 999;
+    }
+
+    /* ── Header ──────────────────────────────────────────────── */
+    .hd { text-align: center; margin-bottom: 2.5rem; }
+    .hd-label {
+      font-size: 0.65rem; letter-spacing: 0.25em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .hd-title {
+      margin-top: 0.4rem;
+      font-size: clamp(1.8rem, 5vw, 2.5rem);
+      font-weight: 800; letter-spacing: -0.03em;
+      background: linear-gradient(110deg, var(--sp) 10%, #7affb5 45%, var(--td) 90%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* ── Step indicator ──────────────────────────────────────── */
+    .steps {
+      display: flex; align-items: center; justify-content: center;
+      gap: 0; margin-bottom: 2rem; user-select: none;
+    }
+    .step { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+    .step-n {
+      width: 30px; height: 30px; border-radius: 50%;
+      border: 1px solid var(--brite);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Space Mono', monospace; font-size: 0.65rem;
+      color: var(--muted); transition: all 0.35s ease;
+    }
+    .step.active  .step-n { border-color: var(--sp); color: var(--sp); box-shadow: 0 0 14px rgba(29,185,84,0.3); }
+    .step.done    .step-n { background: var(--sp); border-color: var(--sp); color: #000; font-size: 0.7rem; }
+    .step-lbl {
+      font-size: 0.58rem; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .step.active .step-lbl { color: var(--text); }
+    .step-line { width: 36px; height: 1px; background: var(--brite); margin: 0 4px 18px; }
+
+    /* ── Cards ───────────────────────────────────────────────── */
+    .card {
+      background: var(--s1); border: 1px solid var(--border);
+      border-radius: 14px; padding: 1.875rem;
+      animation: fadeUp 0.3s ease forwards;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .card-title { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
+    .card-desc  { font-size: 0.84rem; color: var(--muted); line-height: 1.65; margin-bottom: 1.75rem; }
+
+    /* ── Form fields ─────────────────────────────────────────── */
+    .field       { margin-bottom: 1.1rem; }
+    .field label {
+      display: block; font-size: 0.68rem; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 0.45rem;
+    }
+    .field input {
+      width: 100%; padding: 0.7rem 0.9rem;
+      background: var(--s2); border: 1px solid var(--brite);
+      border-radius: 8px; color: var(--text);
+      font-family: 'Space Mono', monospace; font-size: 0.78rem;
+      outline: none; transition: border-color 0.2s;
+    }
+    .field input:focus  { border-color: var(--sp); }
+    .field input::placeholder { color: var(--muted); }
+    .field-hint {
+      margin-top: 0.4rem; font-size: 0.73rem;
+      color: var(--muted); line-height: 1.5;
+    }
+    .field-hint a { color: var(--td); text-decoration: none; }
+    .field-hint a:hover { text-decoration: underline; }
+    .field-hint code {
+      font-family: 'Space Mono', monospace; font-size: 0.68rem;
+      background: var(--s3); padding: 1px 5px; border-radius: 4px;
+    }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.8rem 1.4rem; border-radius: 9px; border: none;
+      cursor: pointer; font-family: 'Syne', sans-serif;
+      font-size: 0.9rem; font-weight: 600;
+      transition: all 0.18s ease; text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
+
+    .btn-full { width: 100%; justify-content: center; padding: 0.95rem; }
+
+    .btn-sp  { background: var(--sp);  color: #000; }
+    .btn-td  { background: var(--td);  color: #fff; }
+    .btn-grad {
+      background: linear-gradient(105deg, var(--sp), #00c8f0);
+      color: #000; font-weight: 700;
+    }
+    .btn-ghost {
+      background: transparent; color: var(--text);
+      border: 1px solid var(--brite);
+    }
+    .btn-sp:hover,  .btn-td:hover,  .btn-grad:hover { filter: brightness(1.12); transform: translateY(-1px); }
+    .btn-ghost:hover { border-color: var(--text); }
+
+    /* ── Connected badge ─────────────────────────────────────── */
+    .badge {
+      display: flex; align-items: center; gap: 0.8rem;
+      padding: 0.85rem 1rem;
+      background: rgba(29,185,84,0.07); border: 1px solid rgba(29,185,84,0.2);
+      border-radius: 9px; font-size: 0.86rem; margin-bottom: 1rem;
+    }
+    .badge-td {
+      background: rgba(0,147,221,0.07); border-color: rgba(0,147,221,0.2);
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      background: var(--sp); box-shadow: 0 0 8px var(--sp);
+      animation: pulse 2.2s ease-in-out infinite;
+    }
+    .dot-td { background: var(--td); box-shadow: 0 0 8px var(--td); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+    /* ── Tidal URL box ───────────────────────────────────────── */
+    .url-box {
+      display: flex; align-items: center; gap: 0.7rem;
+      padding: 0.85rem 1rem;
+      background: var(--s2); border: 1px solid var(--brite);
+      border-radius: 9px; margin-bottom: 1rem;
+      font-family: 'Space Mono', monospace; font-size: 0.72rem;
+    }
+    .url-box a { color: var(--td); text-decoration: none; flex: 1; word-break: break-all; }
+    .url-box a:hover { text-decoration: underline; }
+
+    .waiting {
+      display: flex; align-items: center; gap: 0.7rem;
+      color: var(--muted); font-size: 0.82rem;
+    }
+
+    /* ── Options grid ────────────────────────────────────────── */
+    .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; margin-bottom: 1.5rem; }
+    .opt {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.95rem 1rem;
+      background: var(--s2); border: 1px solid var(--border);
+      border-radius: 9px; cursor: pointer;
+      transition: all 0.18s ease; user-select: none;
+    }
+    .opt:hover { border-color: var(--brite); }
+    .opt.on { border-color: rgba(29,185,84,0.35); background: rgba(29,185,84,0.06); }
+    .opt-icon { font-size: 1.3rem; }
+    .opt-lbl  { font-size: 0.85rem; font-weight: 600; flex: 1; }
+    .opt-chk {
+      width: 19px; height: 19px; border-radius: 5px; flex-shrink: 0;
+      border: 1px solid var(--brite);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.65rem; transition: all 0.15s;
+    }
+    .opt.on .opt-chk { background: var(--sp); border-color: var(--sp); color: #000; }
+
+    /* ── Progress bars ───────────────────────────────────────── */
+    .prog-section { margin-bottom: 1.3rem; }
+    .prog-head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 0.45rem;
+    }
+    .prog-lbl  { font-size: 0.82rem; font-weight: 600; }
+    .prog-sub  {
+      font-family: 'Space Mono', monospace; font-size: 0.68rem; color: var(--muted);
+    }
+    .prog-track { height: 3px; background: var(--s3); border-radius: 2px; overflow: hidden; }
+    .prog-fill  {
+      height: 100%; border-radius: 2px;
+      background: linear-gradient(90deg, var(--sp), var(--td));
+      transition: width 0.35s ease;
+    }
+    .prog-detail {
+      margin-top: 0.35rem;
+      font-size: 0.68rem; color: var(--muted);
+      font-family: 'Space Mono', monospace;
+    }
+
+    /* ── Log feed ────────────────────────────────────────────── */
+    .divider { height: 1px; background: var(--border); margin: 1.25rem 0; }
+    .log-wrap { background: var(--s2); border: 1px solid var(--border); border-radius: 9px; padding: 1rem; }
+    .log-feed {
+      max-height: 160px; overflow-y: auto;
+      font-family: 'Space Mono', monospace; font-size: 0.7rem;
+      line-height: 1.9; scrollbar-width: thin;
+      scrollbar-color: var(--s3) transparent;
+    }
+    .log-info { color: var(--text); }
+    .log-muted{ color: var(--muted); }
+    .log-warn { color: var(--warn); }
+    .log-error{ color: var(--err); }
+
+    /* ── Summary ─────────────────────────────────────────────── */
+    .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; margin-bottom: 1.5rem; }
+    .sum-card {
+      background: var(--s2); border: 1px solid var(--border);
+      border-radius: 9px; padding: 1rem;
+    }
+    .sum-label { font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+    .sum-ok    {
+      font-family: 'Space Mono', monospace;
+      font-size: 1.65rem; font-weight: 700; color: var(--sp);
+      margin: 0.2rem 0;
+    }
+    .sum-fail  { font-family: 'Space Mono', monospace; font-size: 0.72rem; color: var(--muted); }
+
+    /* ── Error box ───────────────────────────────────────────── */
+    .err-box {
+      padding: 0.85rem 1rem; margin-bottom: 1rem;
+      background: rgba(232,64,64,0.08); border: 1px solid rgba(232,64,64,0.22);
+      border-radius: 9px; font-size: 0.84rem; color: var(--err); line-height: 1.5;
+    }
+
+    /* ── Config gear ─────────────────────────────────────────── */
+    .gear-btn {
+      position: fixed; top: 1.25rem; right: 1.25rem;
+      width: 36px; height: 36px; border-radius: 50%;
+      background: var(--s2); border: 1px solid var(--brite);
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: var(--muted); font-size: 0.9rem;
+      transition: all 0.18s; z-index: 10;
+    }
+    .gear-btn:hover { border-color: var(--text); color: var(--text); }
+
+    /* ── Spinner ─────────────────────────────────────────────── */
+    .spin {
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.18); border-top-color: currentColor;
+      border-radius: 50%; animation: rotate 0.75s linear infinite; flex-shrink: 0;
+    }
+    @keyframes rotate { to { transform: rotate(360deg); } }
+
+    /* ── Footer ──────────────────────────────────────────────── */
+    .footer {
+      text-align: center; margin-top: 1.5rem;
+      font-size: 0.65rem; color: var(--muted); letter-spacing: 0.06em;
+    }
+
+    /* ── Responsive ──────────────────────────────────────────── */
+    @media (max-width: 480px) {
+      .opts     { grid-template-columns: 1fr; }
+      .summary  { grid-template-columns: 1fr; }
+      .step-line{ width: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">LOADING…</div>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ── localStorage keys ─────────────────────────────────────
+    const LS_ID  = 'sp2td_client_id';
+    const LS_URL = 'sp2td_backend';
+    const SS_PKV = 'sp2td_pkce_v';
+
+    const REDIRECT = () => window.location.origin + window.location.pathname;
+
+    // ── PKCE helpers ──────────────────────────────────────────
+    const b64u = a => btoa(String.fromCharCode(...a)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+    const randVerifier = () => { const a = new Uint8Array(32); crypto.getRandomValues(a); return b64u(a); };
+    const challenge    = async v => {
+      const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v));
+      return b64u(new Uint8Array(d));
+    };
+
+    // ── Icons (inline SVG as components) ─────────────────────
+    const SpotifyIcon = () => (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+      </svg>
+    );
+
+    // ── Main App ──────────────────────────────────────────────
+    function App() {
+      // step: 0=setup, 1=spotify, 2=tidal, 3=options, 4=transfer, 5=done
+      const [step, setStep]               = useState(null);
+      const [showSetup, setShowSetup]     = useState(false);
+
+      const [clientId,  setClientId]      = useState(() => localStorage.getItem(LS_ID)  || '');
+      const [backendUrl, setBackendUrl]   = useState(() => localStorage.getItem(LS_URL) || '');
+
+      const [spotifyToken,   setSpotifyToken]   = useState(null);
+      const [spotifyProfile, setSpotifyProfile] = useState(null);
+
+      const [tidalSid,       setTidalSid]       = useState(null);
+      const [tidalUrl,       setTidalUrl]        = useState(null);
+      const [tidalConnected, setTidalConnected]  = useState(false);
+
+      const [options, setOptions] = useState({liked:true, playlists:true, albums:true, artists:true});
+
+      const [logs,     setLogs]     = useState([]);
+      const [progress, setProgress] = useState({});
+      const [summary,  setSummary]  = useState(null);
+      const [error,    setError]    = useState(null);
+
+      const logEl = useRef(null);
+      const pollRef = useRef(null);
+
+      // Auto-scroll log
+      useEffect(() => {
+        if (logEl.current) logEl.current.scrollTop = logEl.current.scrollHeight;
+      }, [logs]);
+
+      // ── Init: handle Spotify redirect or restore state ──────
+      useEffect(() => {
+        document.getElementById('loading')?.remove();
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+
+        if (code) {
+          // Coming back from Spotify OAuth
+          history.replaceState({}, '', window.location.pathname);
+          const verifier = sessionStorage.getItem(SS_PKV);
+          const cid      = localStorage.getItem(LS_ID);
+          if (!verifier || !cid) { setStep(1); return; }
+
+          fetch('https://accounts.spotify.com/api/token', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: new URLSearchParams({
+              grant_type: 'authorization_code', code,
+              redirect_uri: REDIRECT(), client_id: cid, code_verifier: verifier,
+            }),
+          })
+          .then(r => r.json())
+          .then(d => {
+            sessionStorage.removeItem(SS_PKV);
+            if (d.access_token) {
+              setSpotifyToken(d.access_token);
+              fetch('https://api.spotify.com/v1/me', {
+                headers: {Authorization: `Bearer ${d.access_token}`},
+              }).then(r => r.json()).then(setSpotifyProfile);
+              setStep(2);
+            } else {
+              setError('Spotify auth failed: ' + (d.error_description || d.error));
+              setStep(1);
+            }
+          })
+          .catch(e => { setError('Spotify auth error: ' + e.message); setStep(1); });
+        } else {
+          // Normal load — check if setup is complete
+          const cid = localStorage.getItem(LS_ID);
+          const url = localStorage.getItem(LS_URL);
+          setStep(cid && url ? 1 : 0);
+        }
+      }, []);
+
+      // ── Cleanup poll on unmount ──────────────────────────────
+      useEffect(() => () => clearInterval(pollRef.current), []);
+
+      const backend = backendUrl.replace(/\/$/, '');
+
+      // ── Setup save ───────────────────────────────────────────
+      const saveSetup = () => {
+        localStorage.setItem(LS_ID,  clientId.trim());
+        localStorage.setItem(LS_URL, backendUrl.trim().replace(/\/$/, ''));
+        setShowSetup(false);
+        if (step === 0) setStep(1);
+      };
+
+      // ── Connect Spotify ──────────────────────────────────────
+      const connectSpotify = async () => {
+        const v = randVerifier();
+        const c = await challenge(v);
+        sessionStorage.setItem(SS_PKV, v);
+        const p = new URLSearchParams({
+          response_type: 'code', client_id: clientId,
+          scope: 'user-library-read playlist-read-private playlist-read-collaborative user-follow-read',
+          redirect_uri: REDIRECT(), code_challenge_method: 'S256', code_challenge: c,
+        });
+        window.location.href = 'https://accounts.spotify.com/authorize?' + p;
+      };
+
+      // ── Connect Tidal ────────────────────────────────────────
+      const connectTidal = async () => {
+        setError(null); setTidalUrl(null);
+        try {
+          const r = await fetch(`${backend}/tidal/auth`, {method: 'POST'});
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || 'Backend error');
+          setTidalSid(d.session_id);
+          setTidalUrl(d.url);
+          // Poll for completion
+          pollRef.current = setInterval(async () => {
+            try {
+              const pr = await fetch(`${backend}/tidal/auth/status?session_id=${d.session_id}`);
+              const pd = await pr.json();
+              if (pd.status === 'authenticated') {
+                setTidalConnected(true);
+                clearInterval(pollRef.current);
+              } else if (pd.status === 'failed') {
+                setError('Tidal auth failed. Try again.');
+                clearInterval(pollRef.current);
+              }
+            } catch(_) {}
+          }, 2000);
+        } catch(e) {
+          setError('Backend unreachable: ' + e.message);
+        }
+      };
+
+      // ── Start transfer ───────────────────────────────────────
+      const startTransfer = async () => {
+        setError(null); setStep(4); setLogs([]); setProgress({});
+        try {
+          const r = await fetch(`${backend}/transfer/start`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              spotify_token: spotifyToken,
+              tidal_session_id: tidalSid,
+              transfer_liked:     options.liked,
+              transfer_playlists: options.playlists,
+              transfer_albums:    options.albums,
+              transfer_artists:   options.artists,
+            }),
+          });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || 'Failed to start');
+          // Stream SSE
+          const es = new EventSource(`${backend}/transfer/progress/${d.job_id}`);
+          es.onmessage = e => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'log') {
+              setLogs(prev => [...prev.slice(-150), msg]);
+            } else if (msg.type === 'progress') {
+              setProgress(prev => ({...prev, [msg.section]: msg}));
+            } else if (msg.type === 'done') {
+              setSummary(msg.summary); setStep(5); es.close();
+            } else if (msg.type === 'error') {
+              setError(msg.message); es.close();
+            }
+          };
+          es.onerror = () => es.close();
+        } catch(e) {
+          setError('Transfer failed: ' + e.message);
+          setStep(3);
+        }
+      };
+
+      // ── Reset ────────────────────────────────────────────────
+      const reset = () => {
+        setStep(1); setSpotifyToken(null); setSpotifyProfile(null);
+        setTidalSid(null); setTidalUrl(null); setTidalConnected(false);
+        setSummary(null); setLogs([]); setProgress({}); setError(null);
+        clearInterval(pollRef.current);
+      };
+
+      // ── Progress helpers ─────────────────────────────────────
+      const getP = (key, altKey) => {
+        const p = progress[key] || progress[altKey];
+        if (!p) return {done:0, total:0, pct:0};
+        const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+        return {...p, pct};
+      };
+
+      if (step === null) return null;
+
+      // ── Setup modal ──────────────────────────────────────────
+      const SetupPanel = ({ onSave, title = 'Configuration' }) => (
+        <div className="card">
+          <div className="card-title">{title}</div>
+          <div className="card-desc">
+            Enter your Spotify Developer Client ID and your Railway backend URL.
+            These are saved locally in your browser only.
+          </div>
+          <div className="field">
+            <label>Spotify Client ID</label>
+            <input type="text" placeholder="4e3a1f2bxxxxxxxxxxxxxxxxxxxxxxxx"
+              value={clientId} onChange={e => setClientId(e.target.value)} />
+            <div className="field-hint">
+              Get one at{' '}
+              <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">
+                developer.spotify.com
+              </a>
+              . Set the redirect URI to: <code>{REDIRECT()}</code>
+            </div>
+          </div>
+          <div className="field">
+            <label>Railway Backend URL</label>
+            <input type="text" placeholder="https://your-app.up.railway.app"
+              value={backendUrl} onChange={e => setBackendUrl(e.target.value)} />
+            <div className="field-hint">
+              Deploy the <code>backend/</code> folder to Railway, then paste the public URL here.
+            </div>
+          </div>
+          <button className="btn btn-grad btn-full"
+            onClick={onSave}
+            disabled={!clientId.trim() || !backendUrl.trim()}>
+            {title === 'Configuration' ? 'Save & Continue →' : 'Save Changes'}
+          </button>
+        </div>
+      );
+
+      // ── Render ───────────────────────────────────────────────
+
+      const STEP_LABELS = ['Spotify','Tidal','Options','Transfer','Done'];
+
+      return (
+        <>
+          {/* Settings gear */}
+          {step > 0 && !showSetup && (
+            <button className="gear-btn" onClick={() => setShowSetup(true)} title="Settings">⚙</button>
+          )}
+
+          {/* Header */}
+          <div className="hd">
+            <div className="hd-label">Music Library Transfer</div>
+            <div className="hd-title">Spotify → Tidal</div>
+          </div>
+
+          {/* Step indicator */}
+          {step > 0 && !showSetup && (
+            <div className="steps">
+              {STEP_LABELS.map((lbl, i) => {
+                const s = i + 1;
+                return (
+                  <React.Fragment key={s}>
+                    {i > 0 && <div className="step-line" />}
+                    <div className={`step ${step === s ? 'active' : step > s ? 'done' : ''}`}>
+                      <div className="step-n">{step > s ? '✓' : s}</div>
+                      <div className="step-lbl">{lbl}</div>
+                    </div>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Error bar */}
+          {error && <div className="err-box">⚠ {error}</div>}
+
+          {/* ── Step 0: Setup ── */}
+          {step === 0 && <SetupPanel onSave={saveSetup} />}
+
+          {/* ── Settings overlay ── */}
+          {showSetup && (
+            <SetupPanel title="Settings" onSave={() => {
+              saveSetup();
+              setShowSetup(false);
+            }} />
+          )}
+
+          {!showSetup && <>
+
+          {/* ── Step 1: Spotify ── */}
+          {step === 1 && (
+            <div className="card">
+              <div className="card-title">Connect Spotify</div>
+              <div className="card-desc">
+                Read-only access to your library — playlists, liked songs, saved albums, and followed artists.
+                Nothing on your Spotify account will be changed.
+              </div>
+              {spotifyToken && spotifyProfile ? (
+                <>
+                  <div className="badge">
+                    <div className="dot" />
+                    <div>
+                      <div style={{fontWeight:600}}>{spotifyProfile.display_name}</div>
+                      <div style={{fontSize:'0.75rem', color:'var(--muted)', fontFamily:'Space Mono, monospace'}}>
+                        {spotifyProfile.email}
+                      </div>
+                    </div>
+                    <div style={{marginLeft:'auto', fontSize:'0.72rem', color:'var(--muted)'}}>
+                      {spotifyProfile.product === 'premium' ? '★ Premium' : 'Free'}
+                    </div>
+                  </div>
+                  <button className="btn btn-grad btn-full" onClick={() => setStep(2)}>
+                    Continue → Connect Tidal
+                  </button>
+                </>
+              ) : (
+                <button className="btn btn-sp btn-full" onClick={connectSpotify}>
+                  <SpotifyIcon /> Connect with Spotify
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* ── Step 2: Tidal ── */}
+          {step === 2 && (
+            <div className="card">
+              <div className="card-title">Connect Tidal</div>
+              <div className="card-desc">
+                Tidal uses a device login flow. Click the link below, sign in to Tidal,
+                and this page will automatically continue.
+              </div>
+              {tidalConnected ? (
+                <>
+                  <div className="badge badge-td" style={{marginBottom:'1rem'}}>
+                    <div className="dot dot-td" />
+                    <div style={{fontWeight:600}}>Tidal connected</div>
+                  </div>
+                  <button className="btn btn-grad btn-full" onClick={() => setStep(3)}>
+                    Continue → Choose What to Transfer
+                  </button>
+                </>
+              ) : tidalUrl ? (
+                <>
+                  <div className="url-box">
+                    <span style={{color:'var(--td)'}}>🔗</span>
+                    <a href={tidalUrl} target="_blank" rel="noopener">{tidalUrl}</a>
+                  </div>
+                  <div className="waiting">
+                    <div className="spin" style={{color:'var(--td)'}} />
+                    Waiting for Tidal login…
+                  </div>
+                </>
+              ) : (
+                <button className="btn btn-td btn-full" onClick={connectTidal}>
+                  Generate Tidal Login Link
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* ── Step 3: Options ── */}
+          {step === 3 && (
+            <div className="card">
+              <div className="card-title">What to Transfer</div>
+              <div className="card-desc">
+                Select which parts of your Spotify library to copy to Tidal.
+                All items will be matched using track ISRC codes and metadata.
+              </div>
+              <div className="opts">
+                {[
+                  {k:'liked',     icon:'❤️',  lbl:'Liked Songs'},
+                  {k:'playlists', icon:'📋',  lbl:'Playlists'},
+                  {k:'albums',    icon:'💿',  lbl:'Saved Albums'},
+                  {k:'artists',   icon:'🎤',  lbl:'Followed Artists'},
+                ].map(({k, icon, lbl}) => (
+                  <div key={k} className={`opt ${options[k] ? 'on' : ''}`}
+                    onClick={() => setOptions(o => ({...o, [k]: !o[k]}))}>
+                    <span className="opt-icon">{icon}</span>
+                    <span className="opt-lbl">{lbl}</span>
+                    <div className="opt-chk">{options[k] && '✓'}</div>
+                  </div>
+                ))}
+              </div>
+              <button className="btn btn-grad btn-full"
+                onClick={startTransfer}
+                disabled={!Object.values(options).some(Boolean)}>
+                Start Transfer →
+              </button>
+            </div>
+          )}
+
+          {/* ── Step 4: Transfer ── */}
+          {step === 4 && (
+            <div className="card">
+              <div className="card-title">Transferring…</div>
+              <div className="card-desc">
+                Fetching your library and matching tracks on Tidal. This can take several minutes for large libraries.
+              </div>
+
+              {/* Progress rows */}
+              {[
+                {key:'liked_songs', fetchKey:'fetch_liked', optK:'liked', lbl:'Liked Songs'},
+                {key:'playlists',   fetchKey:'fetch_playlists', optK:'playlists', lbl:'Playlists'},
+                {key:'albums',      fetchKey:'fetch_albums', optK:'albums', lbl:'Albums'},
+                {key:'artists',     fetchKey:'fetch_artists', optK:'artists', lbl:'Artists'},
+              ].filter(s => options[s.optK]).map(({key, fetchKey, lbl}) => {
+                const p = getP(key, fetchKey);
+                const isFetch = !progress[key] && progress[fetchKey];
+                return (
+                  <div key={key} className="prog-section">
+                    <div className="prog-head">
+                      <span className="prog-lbl">{lbl}</span>
+                      <span className="prog-sub">
+                        {p.total ? `${p.done} / ${p.total}` : '—'}
+                        {p.ok !== undefined && !isFetch && ` · ✓${p.ok} ✗${p.fail}`}
+                      </span>
+                    </div>
+                    <div className="prog-track">
+                      <div className="prog-fill" style={{width: `${p.pct}%`}} />
+                    </div>
+                    {p.current && (
+                      <div className="prog-detail">Current: {p.current}</div>
+                    )}
+                  </div>
+                );
+              })}
+
+              <div className="divider" />
+              <div className="log-wrap">
+                <div className="log-feed" ref={logEl}>
+                  {logs.length === 0
+                    ? <div className="log-muted">Starting…</div>
+                    : logs.map((l,i) => (
+                        <div key={i} className={`log-${l.level === 'info' ? 'info' : l.level === 'warning' ? 'warn' : 'error'}`}>
+                          {l.message}
+                        </div>
+                      ))
+                  }
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 5: Done ── */}
+          {step === 5 && summary && (
+            <div className="card">
+              <div className="card-title">🎉 Transfer Complete!</div>
+              <div className="card-desc">
+                Your Spotify library has been copied to Tidal.
+                Items not found are usually region-restricted or unavailable on Tidal.
+              </div>
+              <div className="summary">
+                {[
+                  {k:'liked_songs', lbl:'Liked Songs'},
+                  {k:'playlists',   lbl:'Playlists'},
+                  {k:'albums',      lbl:'Albums'},
+                  {k:'artists',     lbl:'Artists'},
+                ].filter(s => summary[s.k]).map(({k, lbl}) => (
+                  <div key={k} className="sum-card">
+                    <div className="sum-label">{lbl}</div>
+                    <div className="sum-ok">{summary[k].ok}</div>
+                    <div className="sum-fail">
+                      {summary[k].fail > 0
+                        ? `${summary[k].fail} not found`
+                        : 'All matched ✓'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="btn btn-ghost" onClick={reset}>↺ Start over</button>
+            </div>
+          )}
+
+          </>}
+
+          <div className="footer">
+            Transfers are one-way and read-only on Spotify · No data is stored on the server
+          </div>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
