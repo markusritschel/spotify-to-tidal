@@ -269,13 +269,14 @@
       background: rgba(232,160,48,0.15); padding: 2px 7px; border-radius: 10px;
     }
     .unmatched-list {
-      max-height: 160px; overflow-y: auto;
+      max-height: 160px; overflow: auto;
       scrollbar-width: thin; scrollbar-color: var(--s3) transparent;
     }
     .unmatched-item {
       padding: 0.35rem 1rem;
       font-family: 'Space Mono', monospace; font-size: 0.7rem;
       color: var(--warn); border-top: 1px solid rgba(232,160,48,0.1);
+      white-space: nowrap;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
 
@@ -607,26 +608,45 @@
         } catch(_) {}
       };
 
-      // ── CSV export ───────────────────────────────────────────
-      const downloadCSV = () => {
-        const rows = [['Section', 'Playlist', 'Title', 'Artist', 'Album']];
+      // ── Export helpers ───────────────────────────────────────
+      const _failedItems = () => {
         const sections = [
           {k:'liked_songs', lbl:'Liked Songs'},
           {k:'playlists',   lbl:'Playlists'},
           {k:'albums',      lbl:'Albums'},
           {k:'artists',     lbl:'Artists'},
         ];
+        const items = [];
         for (const {k, lbl} of sections) {
           const s = summary?.[k];
           if (!s?.failed_items?.length) continue;
-          for (const item of s.failed_items) {
-            rows.push([lbl, item.playlist||'', item.title||'', item.artist||'', item.album||'']);
-          }
+          for (const item of s.failed_items) items.push({...item, section: lbl});
         }
+        return items;
+      };
+
+      const downloadCSV = () => {
+        const rows = [['Section', 'Playlist', 'Title', 'Artist', 'Album']];
+        for (const item of _failedItems())
+          rows.push([item.section, item.playlist||'', item.title||'', item.artist||'', item.album||'']);
         const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
         const a = Object.assign(document.createElement('a'), {
           href: URL.createObjectURL(new Blob([csv], {type:'text/csv'})),
           download: 'unmatched_items.csv',
+        });
+        a.click();
+        URL.revokeObjectURL(a.href);
+      };
+
+      const downloadTXT = () => {
+        const lines = _failedItems().map(item => {
+          const parts = [item.artist, item.album, item.title].filter(Boolean);
+          const line = parts.join(' - ');
+          return item.playlist ? `[${item.playlist}] ${line}` : line;
+        });
+        const a = Object.assign(document.createElement('a'), {
+          href: URL.createObjectURL(new Blob([lines.join('\n')], {type:'text/plain'})),
+          download: 'unmatched_items.txt',
         });
         a.click();
         URL.revokeObjectURL(a.href);
@@ -932,11 +952,10 @@
               })()}
 
               <div style={{display:'flex', gap:'0.75rem', flexWrap:'wrap'}}>
-                {Object.values(summary).some(s => s.fail > 0) && (
-                  <button className="btn btn-ghost" onClick={downloadCSV}>
-                    ↓ Download as CSV
-                  </button>
-                )}
+                {Object.values(summary).some(s => s.fail > 0) && (<>
+                  <button className="btn btn-ghost" onClick={downloadCSV}>↓ Download as CSV</button>
+                  <button className="btn btn-ghost" onClick={downloadTXT}>↓ Download as TXT</button>
+                </>)}
                 <button className="btn btn-ghost" onClick={reset}>↺ Start over</button>
               </div>
             </div>

@@ -7,6 +7,7 @@ import asyncio
 import concurrent.futures
 import json
 import queue
+import re
 import threading
 import time
 import uuid
@@ -346,17 +347,90 @@ def _fetch_artists(sp, emit) -> list[dict]:
 
 # ─── Tidal search ─────────────────────────────────────────────────────────────
 
-def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track]:
-    """Search Tidal for a track, using ISRC first (cross-service ID), then name."""
+def _norm(s: str) -> str:
+    """Lowercase and strip punctuation for loose matching."""
+    return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+
+
+def _result_matches(r: tidalapi.Track, artist_norm: str, title_norm: str) -> bool:
+    """Return True if a Tidal result is a plausible match for the given artist+title."""
     try:
+        r_artist = _norm(r.artist.name if r.artist else "")
+        r_title  = _norm(r.name or "")
+        artist_ok = artist_norm in r_artist or r_artist in artist_norm
+        title_ok  = title_norm  in r_title  or r_title  in title_norm
+        return artist_ok and title_ok
+    except Exception:
+        return False
+
+
+def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track]:
+    """Search Tidal for a track.
+
+    Strategy:
+    1. ISRC exact match (most reliable — same recording across services).
+    2. Verified name search: try up to three query forms and check top-5
+       results against normalised artist+title.  Returns the first result
+       that passes the check.
+    3. Last resort: return the first hit of the basic query even if
+       unverified (preserves old behaviour for edge cases).
+    """
+    def _search(query):
+        try:
+            res = tidal.search(query, models=[tidalapi.Track])
+            return res.get("tracks", [])
+        except Exception:
+            return []
+
+    try:
+        # ── 1. ISRC ───────────────────────────────────────────────────────
         if track.get("isrc"):
-            res = tidal.search(track["isrc"], models=[tidalapi.Track])
-            for r in res.get("tracks", []):
+            for r in _search(track["isrc"]):
                 if getattr(r, "isrc", None) == track["isrc"]:
                     return r
-        res = tidal.search(f"{track['title']} {track['artist']}", models=[tidalapi.Track])
-        hits = res.get("tracks", [])
-        return hits[0] if hits else None
+
+        title  = track.get("title", "")
+        artist = track.get("artist", "")
+        album  = track.get("album", "")
+        artist_norm = _norm(artist)
+        title_norm  = _norm(title)
+
+        queries = [
+            f"{title} {artist}",
+            f"{artist} {title}",
+        ]
+        if album:
+            queries.append(f"{artist} {album} {title}")
+
+        # ── 2. Verified name search ───────────────────────────────────────
+        first_hits = None
+        for query in queries:
+            hits = _search(query)
+            if first_hits is None:
+                first_hits = hits
+            for r in hits[:5]:
+                if _result_matches(r, artist_norm, title_norm):
+                    return r
+
+        # ── 3. Album-based lookup ─────────────────────────────────────────
+        # Search for the album, verify the artist, then scan its track list.
+        # Catches tracks that rank poorly in cross-library text search.
+        if album:
+            try:
+                res = tidal.search(f"{artist} {album}", models=[tidalapi.Album])
+                for a in res.get("albums", [])[:3]:
+                    a_artist = _norm(a.artist.name if a.artist else "")
+                    if not (artist_norm in a_artist or a_artist in artist_norm):
+                        continue
+                    for t in a.tracks():
+                        if _result_matches(t, artist_norm, title_norm):
+                            return t
+            except Exception:
+                pass
+
+        # ── 4. Last resort ────────────────────────────────────────────────
+        return first_hits[0] if first_hits else None
+
     except Exception:
         return None
 
