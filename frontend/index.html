@@ -250,6 +250,35 @@
     }
     .sum-fail  { font-family: 'Space Mono', monospace; font-size: 0.72rem; color: var(--muted); }
 
+    /* ── Realtime unmatched panel ────────────────────────────── */
+    .unmatched-wrap {
+      margin-top: 1rem;
+      border: 1px solid rgba(232,160,48,0.25);
+      border-radius: 9px; overflow: hidden;
+    }
+    .unmatched-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.65rem 1rem; cursor: pointer; user-select: none;
+      background: rgba(232,160,48,0.06);
+      font-size: 0.78rem; font-weight: 600; color: var(--warn);
+      transition: background 0.15s;
+    }
+    .unmatched-hd:hover { background: rgba(232,160,48,0.1); }
+    .unmatched-hd-count {
+      font-family: 'Space Mono', monospace; font-size: 0.68rem;
+      background: rgba(232,160,48,0.15); padding: 2px 7px; border-radius: 10px;
+    }
+    .unmatched-list {
+      max-height: 160px; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--s3) transparent;
+    }
+    .unmatched-item {
+      padding: 0.35rem 1rem;
+      font-family: 'Space Mono', monospace; font-size: 0.7rem;
+      color: var(--warn); border-top: 1px solid rgba(232,160,48,0.1);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
     /* ── Unmatched details panel ─────────────────────────────── */
     .details-panel {
       margin-top: 1.1rem; margin-bottom: 0.5rem;
@@ -367,16 +396,22 @@
       const [error,       setError]       = useState(null);
       const [jobId,       setJobId]       = useState(null);
       const [cancelling,  setCancelling]  = useState(false);
-      const [wasCancelled,setWasCancelled]= useState(false);
-      const [showDetails, setShowDetails] = useState(false);
+      const [wasCancelled,  setWasCancelled]  = useState(false);
+      const [showDetails,   setShowDetails]   = useState(false);
+      const [unmatched,     setUnmatched]     = useState([]);
+      const [showUnmatched, setShowUnmatched] = useState(false);
 
-      const logEl = useRef(null);
-      const pollRef = useRef(null);
+      const logEl      = useRef(null);
+      const unmatchedEl= useRef(null);
+      const pollRef    = useRef(null);
 
-      // Auto-scroll log
+      // Auto-scroll log and unmatched list
       useEffect(() => {
         if (logEl.current) logEl.current.scrollTop = logEl.current.scrollHeight;
       }, [logs]);
+      useEffect(() => {
+        if (unmatchedEl.current) unmatchedEl.current.scrollTop = unmatchedEl.current.scrollHeight;
+      }, [unmatched]);
 
       // ── Init: handle Spotify redirect or restore state ──────
       useEffect(() => {
@@ -519,8 +554,8 @@
 
       // ── Start transfer ───────────────────────────────────────
       const startTransfer = async () => {
-        setError(null); setStep(4); setLogs([]); setProgress({});
-        setCancelling(false); setWasCancelled(false);
+        setError(null); setStep(4); setLogs([]); setProgress({}); setUnmatched([]);
+        setCancelling(false); setWasCancelled(false); setShowUnmatched(false);
         try {
           const r = await fetch(`${backend}/transfer/start`, {
             method: 'POST',
@@ -542,6 +577,9 @@
           es.onmessage = e => {
             const msg = JSON.parse(e.data);
             if (msg.type === 'log') {
+              if (msg.level === 'warning' && msg.message.startsWith('✗')) {
+                setUnmatched(prev => [...prev, msg.message.slice(2).trim()]);
+              }
               setLogs(prev => [...prev.slice(-150), msg]);
             } else if (msg.type === 'progress') {
               setProgress(prev => ({...prev, [msg.section]: msg}));
@@ -599,7 +637,8 @@
         setStep(1); setSpotifyToken(null); setSpotifyProfile(null);
         setTidalSid(null); setTidalUrl(null); setTidalConnected(false);
         setSummary(null); setLogs([]); setProgress({}); setError(null);
-        setJobId(null); setCancelling(false); setWasCancelled(false); setShowDetails(false);
+        setJobId(null); setCancelling(false); setWasCancelled(false);
+        setShowDetails(false); setUnmatched([]); setShowUnmatched(false);
         clearInterval(pollRef.current);
       };
 
@@ -798,6 +837,22 @@
                   }
                 </div>
               </div>
+              {unmatched.length > 0 && (
+                <div className="unmatched-wrap">
+                  <div className="unmatched-hd" onClick={() => setShowUnmatched(v => !v)}>
+                    <span>{showUnmatched ? '▲' : '▼'} Not found on Tidal</span>
+                    <span className="unmatched-hd-count">{unmatched.length}</span>
+                  </div>
+                  {showUnmatched && (
+                    <div className="unmatched-list" ref={unmatchedEl}>
+                      {unmatched.map((msg, i) => (
+                        <div key={i} className="unmatched-item">{msg}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div style={{marginTop:'1.25rem'}}>
                 <button className="btn btn-ghost" onClick={cancelTransfer} disabled={cancelling}>
                   {cancelling ? <><div className="spin" /> Cancelling…</> : '⛔ Cancel transfer'}
