@@ -10,6 +10,7 @@ import queue
 import re
 import threading
 import time
+import unicodedata
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -348,8 +349,14 @@ def _fetch_artists(sp, emit) -> list[dict]:
 # ─── Tidal search ─────────────────────────────────────────────────────────────
 
 def _norm(s: str) -> str:
-    """Lowercase and strip punctuation for loose matching."""
+    """Lowercase, convert accents to ASCII equivalents, strip punctuation."""
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+
+
+def _ascii(s: str) -> str:
+    """Strip accents only — used to build ASCII fallback search queries."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii").strip()
 
 
 def _result_matches(r: tidalapi.Track, artist_norm: str, title_norm: str) -> bool:
@@ -395,12 +402,21 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
         artist_norm = _norm(artist)
         title_norm  = _norm(title)
 
+        # Build queries: try original strings first, then ASCII-stripped
+        # versions as a fallback (Tidal may index "Marcação" as "Marcacao").
+        ta, ar, al = _ascii(title), _ascii(artist), _ascii(album)
         queries = [
             f"{title} {artist}",
             f"{artist} {title}",
         ]
         if album:
             queries.append(f"{artist} {album} {title}")
+        # ASCII fallbacks — only add when they differ from the originals
+        if ta != title or ar != artist:
+            queries.append(f"{ta} {ar}")
+            queries.append(f"{ar} {ta}")
+        if al != album and (ta != title or ar != artist):
+            queries.append(f"{ar} {al} {ta}")
 
         # ── 2. Verified name search ───────────────────────────────────────
         first_hits = None
@@ -413,20 +429,29 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
                     return r
 
         # ── 3. Album-based lookup ─────────────────────────────────────────
-        # Search for the album, verify the artist, then scan its track list.
-        # Catches tracks that rank poorly in cross-library text search.
+        # Search by "artist album", open each result album, scan its tracks
+        # for a title match.  Artist name is NOT re-checked at album level —
+        # the search query already constrains it and slight name differences
+        # (feat., "The", compilations) would silently drop the right album.
+        # Track-level match is title-only for the same reason.
+        # Both accented and ASCII album queries are tried.
         if album:
-            try:
-                res = tidal.search(f"{artist} {album}", models=[tidalapi.Album])
-                for a in res.get("albums", [])[:3]:
-                    a_artist = _norm(a.artist.name if a.artist else "")
-                    if not (artist_norm in a_artist or a_artist in artist_norm):
-                        continue
-                    for t in a.tracks():
-                        if _result_matches(t, artist_norm, title_norm):
-                            return t
-            except Exception:
-                pass
+            album_queries = [f"{artist} {album}"]
+            if al != album or ar != artist:
+                album_queries.append(f"{ar} {al}")
+            for aq in album_queries:
+                try:
+                    res = tidal.search(aq, models=[tidalapi.Album])
+                    for a in res.get("albums", [])[:5]:
+                        try:
+                            for t in a.tracks():
+                                t_title = _norm(t.name or "")
+                                if title_norm and (title_norm in t_title or t_title in title_norm):
+                                    return t
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
 
         # ── 4. Last resort ────────────────────────────────────────────────
         return first_hits[0] if first_hits else None
