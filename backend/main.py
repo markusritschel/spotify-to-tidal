@@ -59,10 +59,10 @@ async def start_tidal_auth():
     def _init_tidal():
         sess = tidalapi.Session()
         try:
-            login, future = sess.login_oauth_simple()
+            login, future = sess.login_oauth()
             tidal_sessions[session_id] = {
                 "session": sess,
-                "url": login.verification_uri_complete,
+                "url": login.verification_uri_complete if login.verification_uri_complete.startswith("http") else "https://" + login.verification_uri_complete,
                 "status": "pending",
             }
             ready.set()
