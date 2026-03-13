@@ -569,7 +569,8 @@ def _transfer_liked(tidal, tracks, emit, cancelled):
     ok = fail = 0
     failed = []
     for i, track in enumerate(tracks):
-        if cancelled(): break
+        if cancelled():
+            break
         r = _find_track(tidal, track)
         if r:
             try:
@@ -608,21 +609,25 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
     failed = []
 
     try:
-        # playlists() auto-paginates and only returns user-owned playlists,
-        # all guaranteed UserPlaylist with .add(). playlist_and_favorite_playlists()
-        # is capped at 50 and includes read-only favorited playlists.
         existing = {p.name: p for p in tidal.user.playlists()}
     except Exception:
         existing = {}
 
     for i, pl in enumerate(playlists):
-        if cancelled(): break
+        if cancelled():
+            break
+
+        n_spotify = len(pl["tracks"])
+        emit({"type": "log",
+              "message": f"📋 '{pl['name']}': {n_spotify} track(s) fetched from Spotify",
+              "level": "info"})
 
         if pl["name"] in existing:
             # ── Sync existing playlist ────────────────────────────────────────
             tp = existing[pl["name"]]
             emit({"type": "log", "message": f"🔄 Syncing '{pl['name']}'…", "level": "info"})
 
+            # _tidal_playlist_tracks calls tp.tracks() which sets tp._etag — required for add()
             tidal_tracks = _tidal_playlist_tracks(tp)
             tidal_isrc_set  = {getattr(t, "isrc", "") for t in tidal_tracks if getattr(t, "isrc", "")}
             spotify_isrc_set = {t["isrc"] for t in pl["tracks"] if t["isrc"]}
@@ -637,85 +642,105 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                     pass
                 time.sleep(0.05)
 
-            # Add tracks that are in Spotify but not yet in Tidal.
-            # Only skip tracks already confirmed present by ISRC match.
+            # Add missing tracks one at a time (mirrors _transfer_liked approach)
             to_add = [t for t in pl["tracks"] if not (t["isrc"] and t["isrc"] in tidal_isrc_set)]
-            ids, ok, fail = [], 0, 0
-            for t in to_add:
-                if cancelled(): break
+            ok = fail = 0
+            for j, t in enumerate(to_add):
+                if cancelled():
+                    break
                 r = _find_track(tidal, t)
                 if r:
-                    ids.append(r.id)
-                    ok += 1
+                    try:
+                        tp.add([r.id])
+                        ok += 1
+                    except Exception as e:
+                        fail += 1
+                        failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                        emit({"type": "log", "message": f"⚠️ Could not add '{t['title']}': {e}", "level": "warning"})
                 else:
                     fail += 1
                     failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
-                    emit({"type": "log", "message": f"✗ [{pl['name']}] {t['artist']} - {t['album']} - {t['title']}", "level": "warning"})
-                time.sleep(0.08)
-            for b in range(0, len(ids), 50):
-                try:
-                    result = tp.add(ids[b : b + 50])
-                    emit({"type": "log",
-                          "message": f"📋 '{pl['name']}': added {len(result) if result else 0}/{len(ids[b:b+50])} tracks",
-                          "level": "info"})
-                except Exception as e:
-                    emit({"type": "log",
-                          "message": f"⚠️ Failed to add batch to '{pl['name']}': {e}",
-                          "level": "warning"})
-                time.sleep(0.2)
+                    emit({"type": "log", "message": f"✗ [{pl['name']}] {t['artist']} - {t['title']}", "level": "warning"})
+                emit({"type": "progress", "section": "playlists",
+                      "done": i, "total": len(playlists),
+                      "ok": total_ok + ok, "fail": total_fail + fail,
+                      "current": pl["name"]})
+                time.sleep(0.1)
+
             removed = len(to_remove)
             emit({"type": "log",
                   "message": f"✅ '{pl['name']}': +{ok} added, -{removed} removed",
                   "level": "info"})
+
         else:
             # ── Create new playlist ───────────────────────────────────────────
+            # create_playlist() internally calls factory() → UserPlaylist(session, id) → v1 GET.
+            # That GET can fail with a race condition for brand-new v2 playlists.
+            # We separate the PUT (create) from the GET (access) so a race-condition
+            # failure doesn't silently skip track-adding for a playlist that was created.
+            playlist_id = None
             try:
                 tp_raw = tidal.user.create_playlist(pl["name"], pl["description"])
+                playlist_id = tp_raw.id
             except Exception as e:
-                emit({"type": "log", "message": f"⚠️ Could not create '{pl['name']}': {e}", "level": "warning"})
-                continue
+                # May be a race-condition ObjectNotFound in factory(); the PUT likely
+                # succeeded. Extract the id if we can, otherwise re-list playlists.
+                emit({"type": "log", "message": f"⚠️ create_playlist raised: {e}", "level": "warning"})
 
-            # Use tp_raw directly if it's already a UserPlaylist (has fresh ETag).
-            # Re-instantiating UserPlaylist(tidal, id) triggers an auto-fetch in
-            # __init__ that can fail on a brand-new playlist (Tidal hasn't propagated
-            # it yet) and discard the valid ETag we already have from creation.
-            if isinstance(tp_raw, tidalapi.UserPlaylist):
-                tp = tp_raw
-            else:
-                # factory() returned a plain Playlist (creator field missing) — refetch.
+            if playlist_id is None:
+                # Re-list to find the just-created playlist by name
                 try:
-                    time.sleep(0.3)
-                    tp = tidalapi.UserPlaylist(tidal, tp_raw.id)
-                except Exception as e:
-                    emit({"type": "log", "message": f"⚠️ Could not access '{pl['name']}' after creation: {e}", "level": "warning"})
+                    refreshed = {p.name: p for p in tidal.user.playlists()}
+                    if pl["name"] in refreshed:
+                        tp = refreshed[pl["name"]]
+                        playlist_id = tp.id
+                    else:
+                        emit({"type": "log", "message": f"⚠️ Skipped '{pl['name']}': could not locate after creation", "level": "warning"})
+                        continue
+                except Exception as e2:
+                    emit({"type": "log", "message": f"⚠️ Skipped '{pl['name']}': {e2}", "level": "warning"})
                     continue
+            else:
+                # Ensure tp is a UserPlaylist; call tracks(limit=1) to confirm
+                # accessibility via v1 API and set _etag (needed by add()).
+                try:
+                    tp = tidalapi.UserPlaylist(tidal, playlist_id)
+                except Exception:
+                    # v1 propagation delay — wait and retry once
+                    time.sleep(1.0)
+                    try:
+                        tp = tidalapi.UserPlaylist(tidal, playlist_id)
+                    except Exception as e:
+                        emit({"type": "log", "message": f"⚠️ Could not access '{pl['name']}' after creation: {e}", "level": "warning"})
+                        continue
 
-            ids, ok, fail = [], 0, 0
-            for t in pl["tracks"]:
-                if cancelled(): break
+            # Add tracks one at a time (mirrors _transfer_liked approach)
+            ok = fail = 0
+            for j, t in enumerate(pl["tracks"]):
+                if cancelled():
+                    break
                 r = _find_track(tidal, t)
                 if r:
-                    ids.append(r.id)
-                    ok += 1
+                    try:
+                        tp.add([r.id])
+                        ok += 1
+                    except Exception as e:
+                        fail += 1
+                        failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                        emit({"type": "log", "message": f"⚠️ Could not add '{t['title']}': {e}", "level": "warning"})
                 else:
                     fail += 1
                     failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
-                    emit({"type": "log", "message": f"✗ [{pl['name']}] {t['artist']} - {t['album']} - {t['title']}", "level": "warning"})
-                time.sleep(0.08)
+                    emit({"type": "log", "message": f"✗ [{pl['name']}] {t['artist']} - {t['title']}", "level": "warning"})
+                emit({"type": "progress", "section": "playlists",
+                      "done": i, "total": len(playlists),
+                      "ok": total_ok + ok, "fail": total_fail + fail,
+                      "current": pl["name"]})
+                time.sleep(0.1)
+
             emit({"type": "log",
-                  "message": f"📋 '{pl['name']}': {ok}/{len(pl['tracks'])} matched, adding {len(ids)} track(s)…",
+                  "message": f"✅ '{pl['name']}': {ok}/{n_spotify} track(s) added",
                   "level": "info"})
-            for b in range(0, len(ids), 50):
-                try:
-                    result = tp.add(ids[b : b + 50])
-                    emit({"type": "log",
-                          "message": f"📋 '{pl['name']}': added {len(result) if result else 0}/{len(ids[b:b+50])} tracks",
-                          "level": "info"})
-                except Exception as e:
-                    emit({"type": "log",
-                          "message": f"⚠️ Failed to add batch to '{pl['name']}': {e}",
-                          "level": "warning"})
-                time.sleep(0.2)
 
         total_ok += ok
         total_fail += fail
@@ -732,7 +757,8 @@ def _transfer_albums(tidal, albums, emit, cancelled):
     ok = fail = 0
     failed = []
     for i, album in enumerate(albums):
-        if cancelled(): break
+        if cancelled():
+            break
         try:
             res = tidal.search(f"{album['title']} {album['artist']}", models=[tidalapi.Album])
             hits = res.get("albums", [])
@@ -757,7 +783,8 @@ def _transfer_artists(tidal, artists, emit, cancelled):
     ok = fail = 0
     failed = []
     for i, artist in enumerate(artists):
-        if cancelled(): break
+        if cancelled():
+            break
         try:
             res = tidal.search(artist["name"], models=[tidalapi.Artist])
             hits = res.get("artists", [])
