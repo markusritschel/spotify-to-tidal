@@ -138,6 +138,7 @@ class TransferRequest(BaseModel):
     transfer_playlists: bool = True
     transfer_albums:    bool = True
     transfer_artists:   bool = True
+    playlist_ids:       Optional[list[str]] = None  # None = all playlists
 
 
 @app.post("/transfer/start")
@@ -224,7 +225,7 @@ def _run_transfer(req: TransferRequest, tidal: tidalapi.Session, q: queue.Queue,
         # ── Playlists ────────────────────────────────────────────────────────
         if req.transfer_playlists and not cancelled():
             log("📥 Fetching playlists from Spotify…")
-            playlists = _fetch_playlists(sp, emit)
+            playlists = _fetch_playlists(sp, emit, playlist_ids=req.playlist_ids)
             log(f"🔍 Transferring {len(playlists)} playlists to Tidal…")
             ok, fail, failed = _transfer_playlists(tidal, playlists, emit, cancelled)
             summary["playlists"] = {"total": len(playlists), "ok": ok, "fail": fail, "failed_items": failed}
@@ -284,7 +285,7 @@ def _fetch_liked(sp, emit) -> list[dict]:
     return tracks
 
 
-def _fetch_playlists(sp, emit) -> list[dict]:
+def _fetch_playlists(sp, emit, playlist_ids=None) -> list[dict]:
     raw, results = [], sp.current_user_playlists(limit=50)
     while True:
         raw.extend([p for p in results["items"] if p])
@@ -301,14 +302,19 @@ def _fetch_playlists(sp, emit) -> list[dict]:
               "message": f"⏭ Skipped {skipped} Spotify-owned playlist(s) (Discover Weekly, Daily Mix, etc.)",
               "level": "info"})
 
+    # Apply user selection filter if provided
+    if playlist_ids is not None:
+        id_set = set(playlist_ids)
+        user_playlists = [p for p in user_playlists if p["id"] in id_set]
+
     playlists = []
     for i, p in enumerate(user_playlists):
         try:
-            tracks, tr = [], sp.playlist_tracks(p["id"], limit=100)
+            tracks, tr = [], sp.playlist_items(p["id"], limit=100, additional_types=("track",))
             while True:
                 for item in tr["items"]:
                     t = item.get("track")
-                    if t and t.get("id"):
+                    if t and t.get("id") and t.get("type") == "track":
                         tracks.append({
                             "title": t["name"],
                             "artist": t["artists"][0]["name"],
