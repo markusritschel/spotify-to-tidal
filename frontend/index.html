@@ -213,6 +213,8 @@
     .pl-item input[type=checkbox] { accent-color: var(--sp); flex-shrink: 0; }
     .pl-name { flex: 1; }
     .pl-owner { font-size: 0.68rem; color: var(--muted); font-family: 'Space Mono', monospace; }
+    .pl-item-other { opacity: 0.45; cursor: not-allowed; }
+    .pl-item-other input[type=checkbox] { cursor: not-allowed; }
 
     /* ── Progress bars ───────────────────────────────────────── */
     .prog-section { margin-bottom: 1.3rem; }
@@ -447,8 +449,12 @@
               all.push(...(d.items || []).filter(p => p && p.owner?.id !== 'spotify'));
               url = d.next || null;
             }
-            setPlaylists(all);
-            setSelectedPlIds(new Set(all.map(p => p.id)));
+            // Separate own playlists from others (Spotify blocks reading others' content)
+            const myId = spotifyProfile?.id;
+            const own   = all.filter(p => !myId || p.owner?.id === myId);
+            const other = all.filter(p =>  myId && p.owner?.id !== myId);
+            setPlaylists([...own, ...other]);
+            setSelectedPlIds(new Set(own.map(p => p.id)));
           } catch(e) { /* silent */ }
           finally { setLoadingPlaylists(false); }
         })();
@@ -868,10 +874,12 @@
                   </div>
                   <div className="pl-list">
                     {playlists.map(p => {
-                      const checked = selectedPlIds === null || selectedPlIds.has(p.id);
+                      const isOwn  = !spotifyProfile?.id || p.owner?.id === spotifyProfile?.id;
+                      const checked = isOwn && (selectedPlIds === null || selectedPlIds.has(p.id));
                       return (
-                        <label key={p.id} className="pl-item">
-                          <input type="checkbox" checked={checked} onChange={() => {
+                        <label key={p.id} className={`pl-item${isOwn ? '' : ' pl-item-other'}`}>
+                          <input type="checkbox" checked={checked} disabled={!isOwn} onChange={() => {
+                            if (!isOwn) return;
                             setSelectedPlIds(prev => {
                               const s = new Set(prev ?? playlists.map(x => x.id));
                               checked ? s.delete(p.id) : s.add(p.id);
@@ -879,9 +887,11 @@
                             });
                           }} />
                           <span className="pl-name">{p.name}</span>
-                          {p.owner?.display_name && (
-                            <span className="pl-owner">{p.owner.display_name}</span>
-                          )}
+                          {!isOwn
+                            ? <span className="pl-owner" title="Spotify API no longer allows reading other users' playlists">{p.owner?.display_name} ⚠</span>
+                            : p.owner?.display_name && p.owner.display_name !== spotifyProfile?.display_name
+                              ? <span className="pl-owner">{p.owner.display_name}</span>
+                              : null}
                         </label>
                       );
                     })}
