@@ -200,6 +200,20 @@
     }
     .opt.on .opt-chk { background: var(--sp); border-color: var(--sp); color: #000; }
 
+    /* ── Playlist picker ─────────────────────────────────────── */
+    .pl-picker { background: var(--s2); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 1.25rem; overflow: hidden; }
+    .pl-picker-hd { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
+    .pl-picker-actions { display: flex; gap: 0.75rem; }
+    .btn-link { background: none; border: none; color: var(--sp); font-size: 0.75rem; cursor: pointer; padding: 0; font-family: inherit; }
+    .btn-link:hover { text-decoration: underline; }
+    .pl-list { max-height: 200px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--s3) transparent; }
+    .pl-item { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 1rem; cursor: pointer; font-size: 0.8rem; border-bottom: 1px solid var(--border); }
+    .pl-item:last-child { border-bottom: none; }
+    .pl-item:hover { background: var(--s3); }
+    .pl-item input[type=checkbox] { accent-color: var(--sp); flex-shrink: 0; }
+    .pl-name { flex: 1; }
+    .pl-owner { font-size: 0.68rem; color: var(--muted); font-family: 'Space Mono', monospace; }
+
     /* ── Progress bars ───────────────────────────────────────── */
     .prog-section { margin-bottom: 1.3rem; }
     .prog-head {
@@ -401,10 +415,15 @@
       const [showDetails,   setShowDetails]   = useState(false);
       const [unmatched,     setUnmatched]     = useState([]);
       const [showUnmatched, setShowUnmatched] = useState(false);
+      const [playlists,        setPlaylists]        = useState([]);
+      const [selectedPlIds,    setSelectedPlIds]    = useState(null);
+      const [loadingPlaylists, setLoadingPlaylists] = useState(false);
 
       const logEl      = useRef(null);
       const unmatchedEl= useRef(null);
       const pollRef    = useRef(null);
+      const step4Start = useRef(null);
+      const MIN_STEP4_MS = 4000;
 
       // Auto-scroll log and unmatched list
       useEffect(() => {
@@ -413,6 +432,27 @@
       useEffect(() => {
         if (unmatchedEl.current) unmatchedEl.current.scrollTop = unmatchedEl.current.scrollHeight;
       }, [unmatched]);
+
+      // ── Fetch Spotify playlists when step 3 + playlists enabled ─
+      useEffect(() => {
+        if (step !== 3 || !spotifyToken || !options.playlists) return;
+        setLoadingPlaylists(true);
+        (async () => {
+          try {
+            const all = [];
+            let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
+            while (url) {
+              const r = await fetch(url, {headers: {Authorization: 'Bearer ' + spotifyToken}});
+              const d = await r.json();
+              all.push(...(d.items || []).filter(p => p && p.owner?.id !== 'spotify'));
+              url = d.next || null;
+            }
+            setPlaylists(all);
+            setSelectedPlIds(new Set(all.map(p => p.id)));
+          } catch(e) { /* silent */ }
+          finally { setLoadingPlaylists(false); }
+        })();
+      }, [step, options.playlists, spotifyToken]);
 
       // ── Init: handle Spotify redirect or restore state ──────
       useEffect(() => {
@@ -555,7 +595,8 @@
 
       // ── Start transfer ───────────────────────────────────────
       const startTransfer = async () => {
-        setError(null); setStep(4); setLogs([]); setProgress({}); setUnmatched([]);
+        setError(null); setStep(4); step4Start.current = Date.now();
+        setLogs([]); setProgress({}); setUnmatched([]);
         setCancelling(false); setWasCancelled(false); setShowUnmatched(false);
         try {
           const r = await fetch(`${backend}/transfer/start`, {
@@ -568,6 +609,9 @@
               transfer_playlists: options.playlists,
               transfer_albums:    options.albums,
               transfer_artists:   options.artists,
+              playlist_ids: options.playlists && selectedPlIds !== null
+                ? [...selectedPlIds]
+                : null,
             }),
           });
           const d = await r.json();
@@ -585,9 +629,13 @@
             } else if (msg.type === 'progress') {
               setProgress(prev => ({...prev, [msg.section]: msg}));
             } else if (msg.type === 'done') {
-              setSummary(msg.summary); setStep(5); es.close();
+              setSummary(msg.summary);
+              const delay = Math.max(0, MIN_STEP4_MS - (Date.now() - step4Start.current));
+              setTimeout(() => { setStep(5); es.close(); }, delay);
             } else if (msg.type === 'cancelled') {
-              setSummary(msg.summary); setWasCancelled(true); setStep(5); es.close();
+              setSummary(msg.summary); setWasCancelled(true);
+              const delay = Math.max(0, MIN_STEP4_MS - (Date.now() - step4Start.current));
+              setTimeout(() => { setStep(5); es.close(); }, delay);
             } else if (msg.type === 'error') {
               setError(msg.message); es.close();
             }
@@ -793,16 +841,56 @@
                   {k:'artists',   icon:'🎤',  lbl:'Followed Artists'},
                 ].map(({k, icon, lbl}) => (
                   <div key={k} className={`opt ${options[k] ? 'on' : ''}`}
-                    onClick={() => setOptions(o => ({...o, [k]: !o[k]}))}>
+                    onClick={() => {
+                      const next = !options[k];
+                      setOptions(o => ({...o, [k]: next}));
+                      if (k === 'playlists' && !next) setSelectedPlIds(null);
+                    }}>
                     <span className="opt-icon">{icon}</span>
                     <span className="opt-lbl">{lbl}</span>
                     <div className="opt-chk">{options[k] && '✓'}</div>
                   </div>
                 ))}
               </div>
+              {options.playlists && (
+                <div className="pl-picker">
+                  <div className="pl-picker-hd">
+                    <span className="pl-picker-count">
+                      {loadingPlaylists ? 'Loading…'
+                        : selectedPlIds === null
+                          ? `All ${playlists.length} playlists`
+                          : `${selectedPlIds.size} of ${playlists.length} selected`}
+                    </span>
+                    <div className="pl-picker-actions">
+                      <button className="btn-link" onClick={() => setSelectedPlIds(new Set(playlists.map(p => p.id)))}>All</button>
+                      <button className="btn-link" onClick={() => setSelectedPlIds(new Set())}>None</button>
+                    </div>
+                  </div>
+                  <div className="pl-list">
+                    {playlists.map(p => {
+                      const checked = selectedPlIds === null || selectedPlIds.has(p.id);
+                      return (
+                        <label key={p.id} className="pl-item">
+                          <input type="checkbox" checked={checked} onChange={() => {
+                            setSelectedPlIds(prev => {
+                              const s = new Set(prev ?? playlists.map(x => x.id));
+                              checked ? s.delete(p.id) : s.add(p.id);
+                              return s;
+                            });
+                          }} />
+                          <span className="pl-name">{p.name}</span>
+                          {p.owner?.display_name && (
+                            <span className="pl-owner">{p.owner.display_name}</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <button className="btn btn-grad btn-full"
                 onClick={startTransfer}
-                disabled={!Object.values(options).some(Boolean)}>
+                disabled={!Object.values(options).some(Boolean) || (options.playlists && selectedPlIds !== null && selectedPlIds.size === 0)}>
                 Start Transfer →
               </button>
             </div>
