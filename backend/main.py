@@ -395,9 +395,12 @@ def _titles_match(a: str, b: str) -> bool:
 def _result_matches(r: tidalapi.Track, artist_norm: str, title_norm: str) -> bool:
     """Return True if a Tidal result is a plausible match for the given artist+title."""
     try:
-        r_artist = _norm(r.artist.name if r.artist else "")
-        artist_ok = artist_norm in r_artist or r_artist in artist_norm
-        title_ok  = _titles_match(r.name or "", title_norm)
+        all_artists = getattr(r, "artists", None) or ([r.artist] if r.artist else [])
+        artist_ok = any(
+            artist_norm in _norm(a.name) or _norm(a.name) in artist_norm
+            for a in all_artists
+        )
+        title_ok = _titles_match(r.name or "", title_norm)
         return artist_ok and title_ok
     except Exception:
         return False
@@ -406,78 +409,119 @@ def _result_matches(r: tidalapi.Track, artist_norm: str, title_norm: str) -> boo
 def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track]:
     """Search Tidal for a track.
 
-    Strategy:
-    1. ISRC exact match (most reliable — same recording across services).
-    2. Verified text search: up to six query forms (accented + ASCII),
-       top-5 results each, checked against cleaned artist+title.
-    3. Album-based lookup: search by artist+album, walk the track list,
-       match by cleaned title only (artist already scoped by album query).
-    Returns None if nothing passes verification — no unverified fallback.
+    Strategy (each step only runs if previous found nothing):
+    1. ISRC via dedicated v2 endpoint — most reliable.
+    2. Raw text search — title+artist+album and title+artist queries
+       (+ ASCII fallbacks), top 10 results verified.
+    3. Cleaned text search — same queries with remaster/feat. noise stripped
+       from the query itself (only when cleaning changes the title).
+    4. Album text search — search artist+album, walk tracks by title.
+    5. Artist discography — search artist, browse get_albums()+get_ep_singles(),
+       match album then track by title (last resort, expensive).
     """
-    def _search(query):
+    def _search_tracks(query):
         try:
-            res = tidal.search(query, models=[tidalapi.Track])
-            return res.get("tracks", [])
+            return tidal.search(query, models=[tidalapi.Track]).get("tracks", [])
         except Exception:
             return []
 
-    try:
-        # ── 1. ISRC ───────────────────────────────────────────────────────
-        if track.get("isrc"):
-            for r in _search(track["isrc"]):
-                if getattr(r, "isrc", None) == track["isrc"]:
-                    return r
+    def _search_albums(query):
+        try:
+            return tidal.search(query, models=[tidalapi.Album]).get("albums", [])
+        except Exception:
+            return []
 
+    def _search_artists(query):
+        try:
+            return tidal.search(query, models=[tidalapi.Artist]).get("artists", [])
+        except Exception:
+            return []
+
+    def _check(hits, artist_norm, title_norm):
+        for r in hits[:10]:
+            if _result_matches(r, artist_norm, title_norm):
+                return r
+        return None
+
+    try:
         title  = track.get("title", "")
         artist = track.get("artist", "")
         album  = track.get("album", "")
         artist_norm = _norm(artist)
         title_norm  = _norm(title)
+        ta, ar, al  = _ascii(title), _ascii(artist), _ascii(album)
+        has_accents = (ta != title or ar != artist)
 
-        # Build queries: try original strings first, then ASCII-stripped
-        # versions as a fallback (Tidal may index "Marcação" as "Marcacao").
-        ta, ar, al = _ascii(title), _ascii(artist), _ascii(album)
-        queries = [
-            f"{title} {artist}",
-            f"{artist} {title}",
-        ]
+        # ── 1. ISRC — dedicated v2 endpoint ──────────────────────────────
+        if track.get("isrc"):
+            try:
+                results = tidal.get_tracks_by_isrc(track["isrc"])
+                if results:
+                    return results[0]
+            except Exception:
+                pass
+
+        # ── 2. Raw text search (with album for disambiguation) ────────────
+        raw_queries = []
         if album:
-            queries.append(f"{artist} {album} {title}")
-        # ASCII fallbacks — only add when they differ from the originals
-        if ta != title or ar != artist:
-            queries.append(f"{ta} {ar}")
-            queries.append(f"{ar} {ta}")
-        if al != album and (ta != title or ar != artist):
-            queries.append(f"{ar} {al} {ta}")
+            raw_queries += [f"{title} {artist} {album}", f"{artist} {album} {title}"]
+        raw_queries += [f"{title} {artist}", f"{artist} {title}"]
+        if has_accents:
+            if album:
+                raw_queries += [f"{ta} {ar} {al}", f"{ar} {al} {ta}"]
+            raw_queries += [f"{ta} {ar}", f"{ar} {ta}"]
+        for q in raw_queries:
+            r = _check(_search_tracks(q), artist_norm, title_norm)
+            if r:
+                return r
 
-        # ── 2. Verified name search ───────────────────────────────────────
-        first_hits = None
-        for query in queries:
-            hits = _search(query)
-            if first_hits is None:
-                first_hits = hits
-            for r in hits[:5]:
-                if _result_matches(r, artist_norm, title_norm):
+        # ── 3. Cleaned text search (strip remaster/feat. from query) ──────
+        clean_title = _clean(title)
+        if clean_title != title_norm:  # cleaning actually changed something
+            clean_queries = [f"{clean_title} {artist}", f"{artist} {clean_title}"]
+            if has_accents:
+                clean_queries += [f"{_ascii(clean_title)} {ar}", f"{ar} {_ascii(clean_title)}"]
+            for q in clean_queries:
+                r = _check(_search_tracks(q), artist_norm, title_norm)
+                if r:
                     return r
 
-        # ── 3. Album-based lookup ─────────────────────────────────────────
-        # Search by "artist album", open each result album, scan its tracks
-        # for a title match.  Artist name is NOT re-checked at album level —
-        # the search query already constrains it and slight name differences
-        # (feat., "The", compilations) would silently drop the right album.
-        # Track-level match is title-only for the same reason.
-        # Both accented and ASCII album queries are tried.
+        # ── 4. Album text search → walk tracks ───────────────────────────
         if album:
-            album_queries = [f"{artist} {album}"]
-            if al != album or ar != artist:
-                album_queries.append(f"{ar} {al}")
-            for aq in album_queries:
+            alb_queries = [f"{artist} {album}"]
+            if has_accents or al != album:
+                alb_queries.append(f"{ar} {al}")
+            for aq in alb_queries:
+                for a in _search_albums(aq)[:5]:
+                    try:
+                        for t in a.tracks():
+                            if title_norm and _titles_match(t.name or "", title_norm):
+                                return t
+                    except Exception:
+                        continue
+
+        # ── 5. Artist discography browse (last resort) ────────────────────
+        art_queries = [artist]
+        if has_accents:
+            art_queries.append(ar)
+        for aq in art_queries:
+            for art in _search_artists(aq)[:3]:
                 try:
-                    res = tidal.search(aq, models=[tidalapi.Album])
-                    for a in res.get("albums", [])[:5]:
+                    discography = []
+                    try:
+                        discography += art.get_albums()
+                    except Exception:
+                        pass
+                    try:
+                        discography += art.get_ep_singles()
+                    except Exception:
+                        pass
+                    for alb in discography:
+                        if album and not _titles_match(alb.name or "", album):
+                            continue
                         try:
-                            for t in a.tracks():
-                                if title_norm and _titles_match(t.name or "", title_norm):
+                            for t in alb.tracks():
+                                if _titles_match(t.name or "", title_norm):
                                     return t
                         except Exception:
                             continue
