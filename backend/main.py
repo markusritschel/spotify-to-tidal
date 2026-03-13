@@ -292,28 +292,42 @@ def _fetch_playlists(sp, emit) -> list[dict]:
             break
         results = sp.next(results)
 
+    # Spotify-owned playlists (Discover Weekly, Daily Mix, etc.) return 403
+    # on the tracks endpoint even with playlist-read-private scope — skip them.
+    user_playlists = [p for p in raw if p.get("owner", {}).get("id") != "spotify"]
+    skipped = len(raw) - len(user_playlists)
+    if skipped:
+        emit({"type": "log",
+              "message": f"⏭ Skipped {skipped} Spotify-owned playlist(s) (Discover Weekly, Daily Mix, etc.)",
+              "level": "info"})
+
     playlists = []
-    for i, p in enumerate(raw):
-        tracks, tr = [], sp.playlist_tracks(p["id"], limit=100)
-        while True:
-            for item in tr["items"]:
-                t = item.get("track")
-                if t and t.get("id"):
-                    tracks.append({
-                        "title": t["name"],
-                        "artist": t["artists"][0]["name"],
-                        "album": t["album"]["name"],
-                        "isrc": t.get("external_ids", {}).get("isrc", ""),
-                    })
-            if not tr["next"]:
-                break
-            tr = sp.next(tr)
-        playlists.append({
-            "name": p["name"],
-            "description": p.get("description", "") or "",
-            "tracks": tracks,
-        })
-        emit({"type": "progress", "section": "fetch_playlists", "done": i + 1, "total": len(raw)})
+    for i, p in enumerate(user_playlists):
+        try:
+            tracks, tr = [], sp.playlist_tracks(p["id"], limit=100)
+            while True:
+                for item in tr["items"]:
+                    t = item.get("track")
+                    if t and t.get("id"):
+                        tracks.append({
+                            "title": t["name"],
+                            "artist": t["artists"][0]["name"],
+                            "album": t["album"]["name"],
+                            "isrc": t.get("external_ids", {}).get("isrc", ""),
+                        })
+                if not tr["next"]:
+                    break
+                tr = sp.next(tr)
+            playlists.append({
+                "name": p["name"],
+                "description": p.get("description", "") or "",
+                "tracks": tracks,
+            })
+        except Exception as e:
+            emit({"type": "log",
+                  "message": f"⚠ Could not fetch playlist '{p['name']}': {e}",
+                  "level": "warning"})
+        emit({"type": "progress", "section": "fetch_playlists", "done": i + 1, "total": len(user_playlists)})
     return playlists
 
 
@@ -579,7 +593,10 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
     failed = []
 
     try:
-        existing = {p.name: p for p in tidal.user.playlist_and_favorite_playlists()}
+        # playlists() auto-paginates and only returns user-owned playlists,
+        # all guaranteed UserPlaylist with .add(). playlist_and_favorite_playlists()
+        # is capped at 50 and includes read-only favorited playlists.
+        existing = {p.name: p for p in tidal.user.playlists()}
     except Exception:
         existing = {}
 
@@ -605,8 +622,9 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                     pass
                 time.sleep(0.05)
 
-            # Add tracks that are in Spotify but not yet in Tidal
-            to_add = [t for t in pl["tracks"] if t["isrc"] and t["isrc"] not in tidal_isrc_set]
+            # Add tracks that are in Spotify but not yet in Tidal.
+            # Only skip tracks already confirmed present by ISRC match.
+            to_add = [t for t in pl["tracks"] if not (t["isrc"] and t["isrc"] in tidal_isrc_set)]
             ids, ok, fail = [], 0, 0
             for t in to_add:
                 if cancelled(): break
@@ -621,19 +639,27 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 time.sleep(0.08)
             for b in range(0, len(ids), 50):
                 try:
-                    tp.add(ids[b : b + 50])
-                except Exception:
-                    pass
+                    result = tp.add(ids[b : b + 50])
+                    emit({"type": "log",
+                          "message": f"📋 '{pl['name']}': added {len(result) if result else 0}/{len(ids[b:b+50])} tracks",
+                          "level": "info"})
+                except Exception as e:
+                    emit({"type": "log",
+                          "message": f"⚠️ Failed to add batch to '{pl['name']}': {e}",
+                          "level": "warning"})
                 time.sleep(0.2)
             removed = len(to_remove)
-            added   = ok
             emit({"type": "log",
-                  "message": f"✅ '{pl['name']}': +{added} added, -{removed} removed",
+                  "message": f"✅ '{pl['name']}': +{ok} added, -{removed} removed",
                   "level": "info"})
         else:
             # ── Create new playlist ───────────────────────────────────────────
             try:
-                tp = tidal.user.create_playlist(pl["name"], pl["description"])
+                tp_raw = tidal.user.create_playlist(pl["name"], pl["description"])
+                # Re-fetch as UserPlaylist to guarantee .add() is available.
+                # The v2 creation API may omit the creator field, causing factory()
+                # to return a plain Playlist which lacks .add().
+                tp = tidalapi.UserPlaylist(tidal, tp_raw.id)
             except Exception as e:
                 emit({"type": "log", "message": f"⚠️ Skipped '{pl['name']}': {e}", "level": "warning"})
                 continue
@@ -650,11 +676,19 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                     failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
                     emit({"type": "log", "message": f"✗ [{pl['name']}] {t['artist']} - {t['album']} - {t['title']}", "level": "warning"})
                 time.sleep(0.08)
+            emit({"type": "log",
+                  "message": f"📋 '{pl['name']}': {ok}/{len(pl['tracks'])} tracks matched, adding…",
+                  "level": "info"})
             for b in range(0, len(ids), 50):
                 try:
-                    tp.add(ids[b : b + 50])
-                except Exception:
-                    pass
+                    result = tp.add(ids[b : b + 50])
+                    emit({"type": "log",
+                          "message": f"📋 '{pl['name']}': added {len(result) if result else 0}/{len(ids[b:b+50])} tracks",
+                          "level": "info"})
+                except Exception as e:
+                    emit({"type": "log",
+                          "message": f"⚠️ Failed to add batch to '{pl['name']}': {e}",
+                          "level": "warning"})
                 time.sleep(0.2)
 
         total_ok += ok
