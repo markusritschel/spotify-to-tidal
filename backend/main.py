@@ -329,6 +329,15 @@ def _fetch_playlists(sp, emit, playlist_ids=None) -> list[dict]:
                 "description": p.get("description", "") or "",
                 "tracks": tracks,
             })
+        except spotipy.SpotifyException as e:
+            if e.http_status == 403:
+                emit({"type": "log",
+                      "message": f"⏭ Skipped '{p['name']}': not owned by you (Spotify API restriction)",
+                      "level": "info"})
+            else:
+                emit({"type": "log",
+                      "message": f"⚠ Could not fetch playlist '{p['name']}': {e}",
+                      "level": "warning"})
         except Exception as e:
             emit({"type": "log",
                   "message": f"⚠ Could not fetch playlist '{p['name']}': {e}",
@@ -662,13 +671,24 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
             # ── Create new playlist ───────────────────────────────────────────
             try:
                 tp_raw = tidal.user.create_playlist(pl["name"], pl["description"])
-                # Re-fetch as UserPlaylist to guarantee .add() is available.
-                # The v2 creation API may omit the creator field, causing factory()
-                # to return a plain Playlist which lacks .add().
-                tp = tidalapi.UserPlaylist(tidal, tp_raw.id)
             except Exception as e:
-                emit({"type": "log", "message": f"⚠️ Skipped '{pl['name']}': {e}", "level": "warning"})
+                emit({"type": "log", "message": f"⚠️ Could not create '{pl['name']}': {e}", "level": "warning"})
                 continue
+
+            # Use tp_raw directly if it's already a UserPlaylist (has fresh ETag).
+            # Re-instantiating UserPlaylist(tidal, id) triggers an auto-fetch in
+            # __init__ that can fail on a brand-new playlist (Tidal hasn't propagated
+            # it yet) and discard the valid ETag we already have from creation.
+            if isinstance(tp_raw, tidalapi.UserPlaylist):
+                tp = tp_raw
+            else:
+                # factory() returned a plain Playlist (creator field missing) — refetch.
+                try:
+                    time.sleep(0.3)
+                    tp = tidalapi.UserPlaylist(tidal, tp_raw.id)
+                except Exception as e:
+                    emit({"type": "log", "message": f"⚠️ Could not access '{pl['name']}' after creation: {e}", "level": "warning"})
+                    continue
 
             ids, ok, fail = [], 0, 0
             for t in pl["tracks"]:
@@ -683,7 +703,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                     emit({"type": "log", "message": f"✗ [{pl['name']}] {t['artist']} - {t['album']} - {t['title']}", "level": "warning"})
                 time.sleep(0.08)
             emit({"type": "log",
-                  "message": f"📋 '{pl['name']}': {ok}/{len(pl['tracks'])} tracks matched, adding…",
+                  "message": f"📋 '{pl['name']}': {ok}/{len(pl['tracks'])} matched, adding {len(ids)} track(s)…",
                   "level": "info"})
             for b in range(0, len(ids), 50):
                 try:
