@@ -314,7 +314,7 @@ def _fetch_playlists(sp, emit, playlist_ids=None) -> list[dict]:
             while True:
                 for item in tr["items"]:
                     t = item.get("track")
-                    if t and t.get("id") and t.get("type") == "track":
+                    if t and t.get("id") and t.get("type", "track") == "track":
                         tracks.append({
                             "title": t["name"],
                             "artist": t["artists"][0]["name"],
