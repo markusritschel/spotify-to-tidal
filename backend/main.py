@@ -644,6 +644,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
 
             # Add missing tracks one at a time (mirrors _transfer_liked approach)
             to_add = [t for t in pl["tracks"] if not (t["isrc"] and t["isrc"] in tidal_isrc_set)]
+            emit({"type": "log", "message": f"🔗 '{pl['name']}' (sync): etag={'set' if tp._etag else 'MISSING'}, {len(to_add)} to add", "level": "info"})
             ok = fail = 0
             for j, t in enumerate(to_add):
                 if cancelled():
@@ -651,12 +652,17 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 r = _find_track(tidal, t)
                 if r:
                     try:
-                        tp.add([r.id])
-                        ok += 1
+                        added_ids = tp.add([r.id])
+                        if added_ids:
+                            ok += 1
+                        else:
+                            fail += 1
+                            failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                            emit({"type": "log", "message": f"⚠️ Tidal skipped '{t['title']}' (id={r.id}) — duplicate or unavailable in your region", "level": "warning"})
                     except Exception as e:
                         fail += 1
                         failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
-                        emit({"type": "log", "message": f"⚠️ Could not add '{t['title']}': {e}", "level": "warning"})
+                        emit({"type": "log", "message": f"⚠️ Could not add '{t['title']}' (id={r.id}): {e}", "level": "warning"})
                 else:
                     fail += 1
                     failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
@@ -669,7 +675,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
 
             removed = len(to_remove)
             emit({"type": "log",
-                  "message": f"✅ '{pl['name']}': +{ok} added, -{removed} removed",
+                  "message": f"✅ '{pl['name']}': +{ok} added, -{removed} removed, {fail} failed",
                   "level": "info"})
 
         else:
@@ -682,6 +688,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
             try:
                 tp_raw = tidal.user.create_playlist(pl["name"], pl["description"])
                 playlist_id = tp_raw.id
+                emit({"type": "log", "message": f"✔ Created playlist '{pl['name']}' id={playlist_id}", "level": "info"})
             except Exception as e:
                 # May be a race-condition ObjectNotFound in factory(); the PUT likely
                 # succeeded. Extract the id if we can, otherwise re-list playlists.
@@ -715,6 +722,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                         continue
 
             # Add tracks one at a time (mirrors _transfer_liked approach)
+            emit({"type": "log", "message": f"🔗 '{pl['name']}': etag={'set' if tp._etag else 'MISSING'}, num_tracks={tp.num_tracks}", "level": "info"})
             ok = fail = 0
             for j, t in enumerate(pl["tracks"]):
                 if cancelled():
@@ -722,12 +730,18 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 r = _find_track(tidal, t)
                 if r:
                     try:
-                        tp.add([r.id])
-                        ok += 1
+                        added_ids = tp.add([r.id])
+                        if added_ids:
+                            ok += 1
+                        else:
+                            # add() returned empty — Tidal silently skipped this track
+                            fail += 1
+                            failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
+                            emit({"type": "log", "message": f"⚠️ Tidal skipped '{t['title']}' (id={r.id}) — duplicate or unavailable in your region", "level": "warning"})
                     except Exception as e:
                         fail += 1
                         failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
-                        emit({"type": "log", "message": f"⚠️ Could not add '{t['title']}': {e}", "level": "warning"})
+                        emit({"type": "log", "message": f"⚠️ Could not add '{t['title']}' (id={r.id}): {e}", "level": "warning"})
                 else:
                     fail += 1
                     failed.append({"playlist": pl["name"], "title": t["title"], "artist": t["artist"], "album": t["album"]})
@@ -739,7 +753,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 time.sleep(0.1)
 
             emit({"type": "log",
-                  "message": f"✅ '{pl['name']}': {ok}/{n_spotify} track(s) added",
+                  "message": f"✅ '{pl['name']}': {ok}/{n_spotify} track(s) added, {fail} failed",
                   "level": "info"})
 
         total_ok += ok
