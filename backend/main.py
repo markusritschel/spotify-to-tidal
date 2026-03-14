@@ -509,6 +509,7 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
         has_accents = (ta != title or ar != artist)
 
         # ── 1. ISRC — dedicated v2 endpoint ──────────────────────────────
+        isrc_fallback = None
         if track.get("isrc"):
             try:
                 results = tidal.get_tracks_by_isrc(track["isrc"])
@@ -518,7 +519,11 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
                         for r in results:
                             if getattr(r, "album", None) and _titles_match(r.album.name or "", album_norm):
                                 return r
-                    return results[0]
+                    # Wrong album or no album info — save as fallback, try text search first
+                    if album_norm:
+                        isrc_fallback = results[0]
+                    else:
+                        return results[0]
             except Exception:
                 pass
 
@@ -600,10 +605,11 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
                 except Exception:
                     continue
 
-        return None
+        # No album-specific match found — use ISRC result as last resort
+        return isrc_fallback
 
     except Exception:
-        return None
+        return isrc_fallback
 
 
 # ─── Tidal writers ────────────────────────────────────────────────────────────
