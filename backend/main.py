@@ -400,7 +400,9 @@ def _fetch_artists(sp, emit) -> list[dict]:
 def _norm(s: str) -> str:
     """Lowercase, convert accents to ASCII equivalents, strip punctuation."""
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+    # Replace punctuation/separators with spaces (so "Tim-Dom-Dom" → "tim dom dom")
+    s = re.sub(r"[^a-z0-9 ]+", " ", s.lower())
+    return re.sub(r" +", " ", s).strip()
 
 
 def _ascii(s: str) -> str:
@@ -523,6 +525,17 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
             r = _check(_search_tracks(q), artist_norm, title_norm)
             if r:
                 return r
+
+        # ── 2b. Normalized query (punctuation → spaces) ─────────────────
+        #    Handles cases where hyphens/punctuation in titles confuse search
+        norm_title = _norm(title)
+        norm_artist = _norm(artist)
+        if norm_title != title.lower().strip() or norm_artist != artist.lower().strip():
+            norm_queries = [f"{norm_title} {norm_artist}", f"{norm_artist} {norm_title}"]
+            for q in norm_queries:
+                r = _check(_search_tracks(q), artist_norm, title_norm)
+                if r:
+                    return r
 
         # ── 3. Cleaned text search (strip remaster/feat. from query) ──────
         clean_title = _clean(title)
