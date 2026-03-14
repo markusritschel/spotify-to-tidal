@@ -415,6 +415,7 @@
       const [cancelling,  setCancelling]  = useState(false);
       const [wasCancelled,  setWasCancelled]  = useState(false);
       const [showDetails,   setShowDetails]   = useState(false);
+      const [showLog,       setShowLog]       = useState(false);
       const [unmatched,     setUnmatched]     = useState([]);
       const [showUnmatched, setShowUnmatched] = useState(false);
       const [playlists,        setPlaylists]        = useState([]);
@@ -712,7 +713,7 @@
         setTidalSid(null); setTidalUrl(null); setTidalConnected(false);
         setSummary(null); setLogs([]); setProgress({}); setError(null);
         setJobId(null); setCancelling(false); setWasCancelled(false);
-        setShowDetails(false); setUnmatched([]); setShowUnmatched(false);
+        setShowDetails(false); setShowLog(false); setUnmatched([]); setShowUnmatched(false);
         clearInterval(pollRef.current);
       };
 
@@ -1048,6 +1049,26 @@
                   </>
                 );
               })()}
+
+              {logs.length > 0 && (
+                <div style={{marginBottom:'1rem'}}>
+                  <button className="btn btn-ghost" style={{marginBottom:'0.5rem'}}
+                    onClick={() => setShowLog(v => !v)}>
+                    {showLog ? '▲ Hide transfer log' : '▼ Show transfer log'}
+                  </button>
+                  {showLog && (
+                    <div className="log-wrap">
+                      <div className="log-feed">
+                        {logs.map((l,i) => (
+                          <div key={i} className={`log-${l.level === 'info' ? 'info' : l.level === 'warning' ? 'warn' : 'error'}`}>
+                            {l.message}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div style={{display:'flex', gap:'0.75rem', flexWrap:'wrap'}}>
                 {Object.values(summary).some(s => s.fail > 0) && (<>
