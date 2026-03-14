@@ -873,3 +873,160 @@ def _transfer_artists(tidal, artists, emit, cancelled):
               "done": i + 1, "total": len(artists), "ok": ok, "fail": fail})
         time.sleep(0.12)
     return ok, fail, failed
+
+
+# ─── Cleanup endpoints ───────────────────────────────────────────────────────
+
+def _fetch_paged(fetch_fn, limit=100):
+    items, offset = [], 0
+    while True:
+        batch = fetch_fn(limit=limit, offset=offset)
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+    return items
+
+
+def _item_to_dict(item):
+    if isinstance(item, tidalapi.Track):
+        return {"name": item.name, "artist": getattr(item.artist, "name", "Unknown")}
+    if isinstance(item, tidalapi.Album):
+        return {"name": item.name, "artist": getattr(item.artist, "name", "Unknown")}
+    if isinstance(item, tidalapi.Artist):
+        return {"name": item.name}
+    if isinstance(item, (tidalapi.Playlist, tidalapi.UserPlaylist)):
+        return {"name": item.name, "count": getattr(item, "num_tracks", None)}
+    return {"name": str(item)}
+
+
+@app.get("/tidal/cleanup/preview")
+async def cleanup_preview(session_id: str, type: str):
+    if session_id not in tidal_sessions:
+        raise HTTPException(404, "Unknown session")
+    tidal = tidal_sessions[session_id]
+    if not tidal.check_login():
+        raise HTTPException(401, "Tidal session expired")
+
+    loop = asyncio.get_event_loop()
+
+    def fetch():
+        if type == "tracks":
+            return _fetch_paged(tidal.user.favorites.tracks)
+        elif type == "albums":
+            return _fetch_paged(tidal.user.favorites.albums)
+        elif type == "artists":
+            return _fetch_paged(tidal.user.favorites.artists)
+        elif type == "playlists":
+            return list(tidal.user.playlists())
+        else:
+            return []
+
+    items = await loop.run_in_executor(executor, fetch)
+    return {"items": [_item_to_dict(i) for i in items], "total": len(items)}
+
+
+class CleanupRequest(BaseModel):
+    session_id: str
+    type: str  # tracks | albums | artists | playlists
+    playlist_names: Optional[list[str]] = None
+
+
+@app.post("/tidal/cleanup/run")
+async def cleanup_run(req: CleanupRequest):
+    if req.session_id not in tidal_sessions:
+        raise HTTPException(404, "Unknown session")
+    tidal = tidal_sessions[req.session_id]
+    if not tidal.check_login():
+        raise HTTPException(401, "Tidal session expired")
+
+    q: queue.Queue = queue.Queue()
+
+    def emit(data):
+        q.put(data)
+
+    def run():
+        try:
+            if req.type == "tracks":
+                items = _fetch_paged(tidal.user.favorites.tracks)
+                emit({"type": "log", "message": f"Found {len(items)} favorite track(s)", "level": "info"})
+                ok = fail = 0
+                for i, t in enumerate(items):
+                    try:
+                        tidal.user.favorites.remove_track(t.id)
+                        ok += 1
+                    except Exception:
+                        fail += 1
+                    emit({"type": "progress", "done": i + 1, "total": len(items), "ok": ok, "fail": fail})
+                    time.sleep(0.08)
+                emit({"type": "done", "ok": ok, "fail": fail})
+
+            elif req.type == "albums":
+                items = _fetch_paged(tidal.user.favorites.albums)
+                emit({"type": "log", "message": f"Found {len(items)} saved album(s)", "level": "info"})
+                ok = fail = 0
+                for i, a in enumerate(items):
+                    try:
+                        tidal.user.favorites.remove_album(a.id)
+                        ok += 1
+                    except Exception:
+                        fail += 1
+                    emit({"type": "progress", "done": i + 1, "total": len(items), "ok": ok, "fail": fail})
+                    time.sleep(0.08)
+                emit({"type": "done", "ok": ok, "fail": fail})
+
+            elif req.type == "artists":
+                items = _fetch_paged(tidal.user.favorites.artists)
+                emit({"type": "log", "message": f"Found {len(items)} followed artist(s)", "level": "info"})
+                ok = fail = 0
+                for i, a in enumerate(items):
+                    try:
+                        tidal.user.favorites.remove_artist(a.id)
+                        ok += 1
+                    except Exception:
+                        fail += 1
+                    emit({"type": "progress", "done": i + 1, "total": len(items), "ok": ok, "fail": fail})
+                    time.sleep(0.08)
+                emit({"type": "done", "ok": ok, "fail": fail})
+
+            elif req.type == "playlists":
+                items = list(tidal.user.playlists())
+                if req.playlist_names:
+                    name_set = {n.lower() for n in req.playlist_names}
+                    items = [p for p in items if p.name.lower() in name_set]
+                emit({"type": "log", "message": f"Found {len(items)} playlist(s)", "level": "info"})
+                ok = fail = 0
+                for i, p in enumerate(items):
+                    try:
+                        p.delete()
+                        ok += 1
+                    except Exception:
+                        fail += 1
+                    emit({"type": "progress", "done": i + 1, "total": len(items), "ok": ok, "fail": fail})
+                    time.sleep(0.08)
+                emit({"type": "done", "ok": ok, "fail": fail})
+
+            else:
+                emit({"type": "error", "message": f"Unknown type: {req.type}"})
+
+        except Exception as e:
+            emit({"type": "error", "message": str(e)})
+        finally:
+            q.put(None)
+
+    executor.submit(run)
+
+    async def stream():
+        while True:
+            try:
+                data = await asyncio.get_event_loop().run_in_executor(None, lambda: q.get(timeout=30))
+            except Exception:
+                break
+            if data is None:
+                break
+            yield f"data: {json.dumps(data)}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
