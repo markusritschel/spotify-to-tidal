@@ -513,6 +513,11 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
             try:
                 results = tidal.get_tracks_by_isrc(track["isrc"])
                 if results:
+                    # Prefer the version from the matching album
+                    if album_norm:
+                        for r in results:
+                            if getattr(r, "album", None) and _titles_match(r.album.name or "", album_norm):
+                                return r
                     return results[0]
             except Exception:
                 pass
