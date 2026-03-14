@@ -315,7 +315,7 @@ def _fetch_playlists(sp, emit, playlist_ids=None) -> list[dict]:
             while True:
                 raw_item_count += len(tr["items"])
                 for item in tr["items"]:
-                    t = item.get("track")
+                    t = item.get("track") or item.get("item")
                     if t and t.get("id") and t.get("type", "track") == "track":
                         tracks.append({
                             "title": t["name"],
