@@ -645,6 +645,8 @@ def _tidal_playlist_tracks(tp) -> list:
 def _transfer_playlists(tidal, playlists, emit, cancelled):
     total_ok = total_fail = 0
     failed = []
+    track_total = sum(len(pl["tracks"]) for pl in playlists)
+    tracks_done = 0
 
     try:
         existing = {p.name: p for p in tidal.user.playlists()}
@@ -708,9 +710,11 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 emit({"type": "progress", "section": "playlists",
                       "done": i, "total": len(playlists),
                       "ok": total_ok + ok, "fail": total_fail + fail,
+                      "track_done": tracks_done + j + 1, "track_total": track_total,
                       "current": pl["name"]})
                 time.sleep(0.1)
 
+            tracks_done += len(to_add)
             removed = len(to_remove)
             emit({"type": "log",
                   "message": f"✅ '{pl['name']}': +{ok} added, -{removed} removed, {fail} failed",
@@ -787,9 +791,11 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
                 emit({"type": "progress", "section": "playlists",
                       "done": i, "total": len(playlists),
                       "ok": total_ok + ok, "fail": total_fail + fail,
+                      "track_done": tracks_done + j + 1, "track_total": track_total,
                       "current": pl["name"]})
                 time.sleep(0.1)
 
+            tracks_done += len(pl["tracks"])
             emit({"type": "log",
                   "message": f"✅ '{pl['name']}': {ok}/{n_spotify} track(s) added, {fail} failed",
                   "level": "info"})
@@ -800,6 +806,7 @@ def _transfer_playlists(tidal, playlists, emit, cancelled):
             "type": "progress", "section": "playlists",
             "done": i + 1, "total": len(playlists),
             "ok": total_ok, "fail": total_fail,
+            "track_done": tracks_done, "track_total": track_total,
             "current": pl["name"],
         })
     return total_ok, total_fail, failed

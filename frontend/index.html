@@ -202,8 +202,11 @@
 
     /* ── Playlist picker ─────────────────────────────────────── */
     .pl-picker { background: var(--s2); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 1.25rem; overflow: hidden; }
-    .pl-picker-hd { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); }
-    .pl-picker-actions { display: flex; gap: 0.75rem; }
+    .pl-picker-hd { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); gap: 0.75rem; }
+    .pl-picker-actions { display: flex; gap: 0.75rem; flex-shrink: 0; }
+    .pl-filter { background: var(--s1); border: 1px solid var(--border); border-radius: 5px; color: var(--text); padding: 0.25rem 0.5rem; font-size: 0.72rem; font-family: 'Space Mono', monospace; outline: none; flex: 1; min-width: 0; }
+    .pl-filter::placeholder { color: var(--muted); }
+    .pl-filter:focus { border-color: var(--sp); }
     .btn-link { background: none; border: none; color: var(--sp); font-size: 0.75rem; cursor: pointer; padding: 0; font-family: inherit; }
     .btn-link:hover { text-decoration: underline; }
     .pl-list { max-height: 200px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--s3) transparent; }
@@ -420,6 +423,8 @@
       const [showUnmatched, setShowUnmatched] = useState(false);
       const [playlists,        setPlaylists]        = useState([]);
       const [selectedPlIds,    setSelectedPlIds]    = useState(null);
+      const [plFilter,         setPlFilter]         = useState('');
+      const [plSort,           setPlSort]           = useState('default');
       const [loadingPlaylists, setLoadingPlaylists] = useState(false);
 
       const logEl      = useRef(null);
@@ -868,13 +873,28 @@
                           ? `All ${playlists.length} playlists`
                           : `${selectedPlIds.size} of ${playlists.length} selected`}
                     </span>
+                    <input type="text" className="pl-filter" placeholder="Filter…" value={plFilter} onChange={e => setPlFilter(e.target.value)} />
                     <div className="pl-picker-actions">
-                      <button className="btn-link" onClick={() => setSelectedPlIds(new Set(playlists.map(p => p.id)))}>All</button>
-                      <button className="btn-link" onClick={() => setSelectedPlIds(new Set())}>None</button>
+                      <button className="btn-link" onClick={() => {
+                        const visible = playlists.filter(p => !plFilter || p.name.toLowerCase().includes(plFilter.toLowerCase()));
+                        const ownIds = visible.filter(p => !spotifyProfile?.id || p.owner?.id === spotifyProfile?.id).map(p => p.id);
+                        setSelectedPlIds(prev => { const s = new Set(prev ?? playlists.map(x => x.id)); ownIds.forEach(id => s.add(id)); return s; });
+                      }}>All</button>
+                      <button className="btn-link" onClick={() => {
+                        const visible = playlists.filter(p => !plFilter || p.name.toLowerCase().includes(plFilter.toLowerCase()));
+                        const visIds = new Set(visible.map(p => p.id));
+                        setSelectedPlIds(prev => { const s = new Set(prev ?? playlists.map(x => x.id)); visIds.forEach(id => s.delete(id)); return s; });
+                      }}>None</button>
+                      <button className="btn-link" onClick={() => setPlSort(s => s === 'alpha' ? 'default' : 'alpha')}>
+                        {plSort === 'alpha' ? 'A\u2192Z \u2713' : 'A\u2192Z'}
+                      </button>
                     </div>
                   </div>
                   <div className="pl-list">
-                    {playlists.map(p => {
+                    {playlists
+                      .filter(p => !plFilter || p.name.toLowerCase().includes(plFilter.toLowerCase()))
+                      .sort((a, b) => plSort === 'alpha' ? a.name.localeCompare(b.name) : 0)
+                      .map(p => {
                       const isOwn  = !spotifyProfile?.id || p.owner?.id === spotifyProfile?.id;
                       const checked = isOwn && (selectedPlIds === null || selectedPlIds.has(p.id));
                       return (
@@ -929,8 +949,10 @@
                     <div className="prog-head">
                       <span className="prog-lbl">{lbl}</span>
                       <span className="prog-sub">
-                        {p.total ? `${p.done} / ${p.total}` : '—'}
-                        {p.ok !== undefined && !isFetch && ` · ✓${p.ok} ✗${p.fail}`}
+                        {p.track_total
+                          ? `${p.track_done} / ${p.track_total} tracks · ✓${p.ok} ✗${p.fail}`
+                          : p.total ? `${p.done} / ${p.total}` : '—'}
+                        {!p.track_total && p.ok !== undefined && !isFetch && ` · ✓${p.ok} ✗${p.fail}`}
                       </span>
                     </div>
                     <div className="prog-track">
