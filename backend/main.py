@@ -311,7 +311,9 @@ def _fetch_playlists(sp, emit, playlist_ids=None) -> list[dict]:
     for i, p in enumerate(user_playlists):
         try:
             tracks, tr = [], sp.playlist_items(p["id"], limit=100, additional_types=("track",))
+            raw_item_count = 0
             while True:
+                raw_item_count += len(tr["items"])
                 for item in tr["items"]:
                     t = item.get("track")
                     if t and t.get("id") and t.get("type", "track") == "track":
@@ -324,6 +326,24 @@ def _fetch_playlists(sp, emit, playlist_ids=None) -> list[dict]:
                 if not tr["next"]:
                     break
                 tr = sp.next(tr)
+            if not tracks and raw_item_count > 0:
+                # Debug: show why items were filtered out
+                tr2 = sp.playlist_items(p["id"], limit=5, additional_types=("track",))
+                samples = []
+                for item in tr2["items"][:3]:
+                    t = item.get("track")
+                    samples.append({
+                        "track_is_none": t is None,
+                        "id": t.get("id") if t else None,
+                        "type": t.get("type") if t else None,
+                        "name": t.get("name") if t else None,
+                        "item_keys": list(item.keys()),
+                    })
+                owner = p.get("owner", {})
+                emit({"type": "log",
+                      "message": f"🔍 Debug '{p['name']}': {raw_item_count} raw items, 0 passed filter. "
+                                 f"Owner: {owner.get('id')} / {owner.get('display_name')}. Samples: {samples}",
+                      "level": "warning"})
             playlists.append({
                 "name": p["name"],
                 "description": p.get("description", "") or "",
