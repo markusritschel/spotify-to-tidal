@@ -58,7 +58,7 @@
       pointer-events: none; z-index: 0;
     }
 
-    #root { position: relative; z-index: 1; width: 100%; max-width: 600px; }
+    #root { position: relative; z-index: 1; width: 100%; max-width: 660px; }
 
     /* ── Loading screen ──────────────────────────────────────── */
     #loading {
@@ -108,7 +108,7 @@
     /* ── Cards ───────────────────────────────────────────────── */
     .card {
       background: var(--s1); border: 1px solid var(--border);
-      border-radius: 14px; padding: 1.875rem;
+      border-radius: 14px; padding: 2.1rem;
       animation: fadeUp 0.3s ease forwards;
     }
     @keyframes fadeUp {
@@ -116,7 +116,7 @@
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    .card-title { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
+    .card-title { font-size: 1.45rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
     .card-desc  { font-size: 0.84rem; color: var(--muted); line-height: 1.65; margin-bottom: 1.75rem; }
 
     /* ── Buttons ─────────────────────────────────────────────── */
@@ -215,6 +215,7 @@
     .pl-item:hover { background: var(--s3); }
     .pl-item input[type=checkbox] { accent-color: var(--sp); flex-shrink: 0; }
     .pl-name { flex: 1; }
+    .pl-count { font-size: 0.68rem; color: var(--muted); font-family: 'Space Mono', monospace; flex-shrink: 0; }
     .pl-owner { font-size: 0.68rem; color: var(--muted); font-family: 'Space Mono', monospace; }
     .pl-item-other { opacity: 0.45; cursor: not-allowed; }
     .pl-item-other input[type=checkbox] { cursor: not-allowed; }
@@ -408,7 +409,7 @@
       const [tidalUrl,       setTidalUrl]        = useState(null);
       const [tidalConnected, setTidalConnected]  = useState(false);
 
-      const [options, setOptions] = useState({liked:true, playlists:true, albums:true, artists:true});
+      const [options, setOptions] = useState({liked:false, playlists:false, albums:false, artists:false});
 
       const [logs,        setLogs]        = useState([]);
       const [progress,    setProgress]    = useState({});
@@ -908,6 +909,7 @@
                             });
                           }} />
                           <span className="pl-name">{p.name}</span>
+                          {isOwn && p.tracks?.total != null && <span className="pl-count">{p.tracks.total}</span>}
                           {!isOwn
                             ? <span className="pl-owner" title="Spotify API no longer allows reading other users' playlists">{p.owner?.display_name} ⚠</span>
                             : p.owner?.display_name && p.owner.display_name !== spotifyProfile?.display_name
