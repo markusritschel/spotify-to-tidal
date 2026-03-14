@@ -488,11 +488,15 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
         except Exception:
             return []
 
-    def _check(hits, artist_norm, title_norm):
+    def _check(hits, artist_norm, title_norm, album_norm=""):
+        first_match = None
         for r in hits[:10]:
             if _result_matches(r, artist_norm, title_norm):
-                return r
-        return None
+                if album_norm and getattr(r, "album", None) and _titles_match(r.album.name or "", album_norm):
+                    return r  # exact album match — best possible
+                if first_match is None:
+                    first_match = r
+        return first_match
 
     try:
         title  = track.get("title", "")
@@ -500,6 +504,7 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
         album  = track.get("album", "")
         artist_norm = _norm(artist)
         title_norm  = _norm(title)
+        album_norm  = _norm(album)
         ta, ar, al  = _ascii(title), _ascii(artist), _ascii(album)
         has_accents = (ta != title or ar != artist)
 
@@ -522,7 +527,7 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
                 raw_queries += [f"{ta} {ar} {al}", f"{ar} {al} {ta}"]
             raw_queries += [f"{ta} {ar}", f"{ar} {ta}"]
         for q in raw_queries:
-            r = _check(_search_tracks(q), artist_norm, title_norm)
+            r = _check(_search_tracks(q), artist_norm, title_norm, album_norm)
             if r:
                 return r
 
@@ -533,7 +538,7 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
         if norm_title != title.lower().strip() or norm_artist != artist.lower().strip():
             norm_queries = [f"{norm_title} {norm_artist}", f"{norm_artist} {norm_title}"]
             for q in norm_queries:
-                r = _check(_search_tracks(q), artist_norm, title_norm)
+                r = _check(_search_tracks(q), artist_norm, title_norm, album_norm)
                 if r:
                     return r
 
@@ -544,7 +549,7 @@ def _find_track(tidal: tidalapi.Session, track: dict) -> Optional[tidalapi.Track
             if has_accents:
                 clean_queries += [f"{_ascii(clean_title)} {ar}", f"{ar} {_ascii(clean_title)}"]
             for q in clean_queries:
-                r = _check(_search_tracks(q), artist_norm, title_norm)
+                r = _check(_search_tracks(q), artist_norm, title_norm, album_norm)
                 if r:
                     return r
 
